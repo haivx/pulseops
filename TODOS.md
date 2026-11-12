@@ -1,5 +1,19 @@
 # TODOS
 
+## Setup
+
+### Create a monitor and checks for every app
+
+**What:** A Better Stack monitor for each app and for the collector, and a healthchecks.io check for each worker, job or service, with the worker ping wired in each app.
+
+**Why:** The spike found one monitor and one never-pinged check. The note reads every registered monitor and check, so a missing or never-pinged one shows `unknown` and blocks `all clear`.
+
+**Context:** Done at build time. Ping the first check once and confirm `n_pings`, `last_ping` and `status` change through the read-only API, which the spike did not get to. Use exact Railway environment names (`<project> / production`) for each app's GitHub deploy source. Put checks in one healthchecks.io project if possible, since read-only keys are per project. See `docs/vendor-spike.md`.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** None
+
 ## Note
 
 ### Subscription price history
@@ -13,6 +27,18 @@
 **Effort:** S
 **Priority:** P2
 **Depends on:** v1 note running
+
+### Monthly cost analysis and forecast
+
+**What:** A monthly view of LLM and subscription costs, with a forecast once there is enough history.
+
+**Why:** The note shows yesterday and the next 7 days, but not the trend or where costs are heading.
+
+**Context:** Reads the kept events and subscriptions. Needs dated prices in the LLM price table, because v1 applies current prices only. The forecast needs some months of history first.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** Subscription price history
 
 ### Mute a known problem
 
@@ -40,6 +66,18 @@
 
 ## Client
 
+### Queue backlog monitoring for BullMQ apps
+
+**What:** Sample job counts per queue and report a growing backlog in the note.
+
+**Why:** A worker can be alive and pinging while falling behind, which the v1 ping cannot see.
+
+**Context:** One new event `kind` in schema `v: 2`, sampled on a timer by the same client, with queue names as a closed set in the registry.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** Collector and client
+
 ### Client version header
 
 **What:** Send `CLIENT_VERSION` in the `User-Agent` header and flag stale copies in `doctor`.
@@ -60,7 +98,7 @@
 
 **Why:** A stolen token can fill Postgres and inflate spend, causing false ceiling problems.
 
-**Context:** The current rate limit covers only unauthenticated requests. State how client IP is derived when adding this.
+**Context:** v1 has no ingest rate limit, since auth and size checks run first. State how client IP is derived if a per-IP limit is added too.
 
 **Effort:** S
 **Priority:** P3
@@ -92,13 +130,25 @@
 **Priority:** P4
 **Depends on:** None
 
-## Portfolio
+## Later
+
+### Local demo mode
+
+**What:** `pulseops note --dry-run --fixtures demo`, rendering each note state from fixtures.
+
+**Why:** Lets anyone run the project and see every state without any accounts.
+
+**Context:** Deferred at the final gate because the one-day note is the first working thing either way.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** Note job
 
 ### Public status wall
 
 **What:** A public read-only view of the fleet.
 
-**Why:** Makes the portfolio piece visible without running it.
+**Why:** Shows fleet health without running the project.
 
 **Context:** Deferred because it would publish the app names that the plan keeps out of git.
 
