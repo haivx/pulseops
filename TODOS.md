@@ -128,6 +128,8 @@
 
 **Why:** Three review rounds kept finding new value shapes the serializer misread (bytes, boxed strings, shared graphs, getters). Typed fields remove the whole class instead of patching each shape. The owner decided on 2026-11-12 that the serializer gets no more patches after `chore/logger-hardening`.
 
+**Also from the last `chore/logger-hardening` review round, not patched under the stop rule in CLAUDE.md:** a boxed `String` with its own `valueOf` can return a Buffer that skips byte-to-text conversion; `SerializeLimitError` is not a `SecretError` and has no `code`, though its message says `E_SECRET_IN_OUTPUT`; and the 10,000-node strict budget rejects a large but linear value such as a batch of rows. None is reachable today (the only `assertNoSecrets` caller passes a string), and checking the final string removes all three.
+
 **Context:** Supersedes most of "Logger follow-ups after hardening" and "Encodings and checks the redactor still misses" below; close those items that no longer apply when this lands.
 
 **Effort:** M

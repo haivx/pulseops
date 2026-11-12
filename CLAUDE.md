@@ -6,6 +6,12 @@ Plan: `docs/designs/pulseops-daily-note.md`. Deferred work: `TODOS.md`.
 
 - API keys: read only from the environment, never in logs, database rows or LLM prompts. See `docs/rules/secrets.md` before touching any code that reads keys, logs, writes rows or builds prompts.
 
+## Process
+
+- A plan that adds a new mechanism includes an "Options considered" section: the structural option and the detection option, and why one was chosen. Wait for Liam's approval before writing code.
+- If the same component shows new bugs in two review rounds in a row, stop patching it: tell Liam and propose a redesign instead of another fix.
+- Guardrails are structural by default (types, allow-lists, a narrow API that cannot be misused). Detection (scanning, redaction, review) is only the second layer.
+
 ## Testing
 
 - `npm run check` runs the type check and all tests.
