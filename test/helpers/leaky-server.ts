@@ -6,6 +6,9 @@ export function fakeKey(prefix = 'fake'): string {
   return `${prefix}_${randomBytes(20).toString('hex')}`;
 }
 
+/** Credential headers the leaky server sends back in its response body. */
+const ECHOED_HEADERS = ['authorization', 'x-api-key'];
+
 /**
  * A local vendor stand-in that rejects every request with 401 and, like some
  * real APIs, echoes the credentials and URL it received back in the body.
@@ -17,10 +20,7 @@ export async function startLeakyServer(): Promise<{ url: string; close: () => Pr
       JSON.stringify({
         error: 'invalid credentials',
         received_url: req.url,
-        received_headers: {
-          authorization: req.headers['authorization'] ?? null,
-          'x-api-key': req.headers['x-api-key'] ?? null,
-        },
+        received_headers: Object.fromEntries(ECHOED_HEADERS.map((name) => [name, req.headers[name] ?? null])),
       }),
     );
   });

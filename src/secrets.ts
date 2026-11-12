@@ -1,5 +1,6 @@
 // Domain rule: API keys are read only from the environment, and never reach a
 // log, a database row in plain text, or an LLM prompt. See docs/rules/secrets.md.
+import { safeStringify } from './serialize.ts';
 
 export type Secret = { name: string; value: string };
 
@@ -15,6 +16,20 @@ export class SecretError extends Error {
 /** Shorter values could match ordinary text, so redaction would be unsafe. */
 const MIN_SECRET_LENGTH = 16;
 
+/**
+ * Characters that JSON escaping and URL encoding leave alone, apart from
+ * `+ / =` whose encoded forms the redactor knows. A key with any other
+ * character could leak in an escaped form the redactor does not recognize.
+ */
+const SECRET_CHARS = /^[A-Za-z0-9._~+/=-]+$/;
+
+function invalidSecret(name: string): SecretError {
+  return new SecretError(
+    'E_CONFIG_INVALID',
+    `pulseops E_CONFIG_INVALID: ${name} is shorter than ${MIN_SECRET_LENGTH} characters or has characters other than A-Z a-z 0-9 . _ ~ + / = -; fix: copy the full key again`,
+  );
+}
+
 export function readSecret(env: Record<string, string | undefined>, name: string): Secret {
   const value = env[name];
   if (value === undefined || value === '') {
@@ -23,24 +38,44 @@ export function readSecret(env: Record<string, string | undefined>, name: string
       `pulseops E_CONFIG_MISSING: environment variable ${name} is not set; fix: set ${name} in the environment`,
     );
   }
-  if (value.length < MIN_SECRET_LENGTH || value.trim() !== value) {
-    throw new SecretError(
-      'E_CONFIG_INVALID',
-      `pulseops E_CONFIG_INVALID: ${name} is shorter than ${MIN_SECRET_LENGTH} characters or has surrounding spaces; fix: copy the full key again`,
-    );
-  }
+  if (value.length < MIN_SECRET_LENGTH || !SECRET_CHARS.test(value)) throw invalidSecret(name);
   return { name, value };
 }
 
-/** The text forms a key commonly takes when it leaks. */
+const lowerPercent = (text: string) => text.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
+
+/**
+ * The text forms a key commonly takes when it leaks: raw, URL-encoded (both
+ * encoders, either case), with `/` escaped as `\/` the way some JSON writers
+ * do, and base64. Each form is also listed JSON-escaped, because log lines are
+ * redacted after JSON.stringify, which doubles the backslash in `\/`.
+ */
 function leakForms(value: string): string[] {
-  return [value, encodeURIComponent(value), Buffer.from(value).toString('base64')];
+  const uri = encodeURIComponent(value);
+  const searchParam = new URLSearchParams({ k: value }).toString().slice('k='.length);
+  const forms = [
+    value,
+    uri,
+    lowerPercent(uri),
+    searchParam,
+    lowerPercent(searchParam),
+    value.replaceAll('/', '\\/'),
+    Buffer.from(value).toString('base64'),
+  ];
+  return [...new Set(forms.flatMap((form) => [form, JSON.stringify(form).slice(1, -1)]))];
 }
 
 // Long enough to hold an encoded key, so short words are never decoded.
 const BASE64_RUN = /[A-Za-z0-9+/]{20,}={0,2}/g;
 
+/** Decodes a base64 run as if the encoded value started at offset 0, 1, 2 or 3. */
+function decodedAlignments(run: string): string[] {
+  return [0, 1, 2, 3].map((offset) => Buffer.from(run.slice(offset), 'base64').toString('utf8'));
+}
+
 export function createRedactor(secrets: Secret[]): (text: string) => string {
+  // A Secret built by hand skips readSecret; an empty one would mark every character.
+  for (const secret of secrets) if (secret.value.length < MIN_SECRET_LENGTH) throw invalidSecret(secret.name);
   const forms = secrets
     .flatMap((secret) => leakForms(secret.value).map((form) => ({ form, mark: `[REDACTED:${secret.name}]` })))
     .sort((a, b) => b.form.length - a.form.length);
@@ -51,10 +86,14 @@ export function createRedactor(secrets: Secret[]): (text: string) => string {
     if (secrets.length === 0) return text;
     // Credentials inside an encoded value, such as HTTP Basic auth, hide the
     // key behind base64 that does not line up with the key's own encoding.
+    // The encoded value may start mid-run when glued to a path or other text,
+    // so every 4-character alignment is tried.
     let out = text.replace(BASE64_RUN, (run) => {
-      const decoded = Buffer.from(run, 'base64').toString('utf8');
-      const hit = containsSecret(decoded);
-      return hit === undefined ? run : `[REDACTED:${hit.name}]`;
+      for (const decoded of decodedAlignments(run)) {
+        const hit = containsSecret(decoded);
+        if (hit !== undefined) return `[REDACTED:${hit.name}]`;
+      }
+      return run;
     });
     for (const { form, mark } of forms) out = out.split(form).join(mark);
     return out;
@@ -64,10 +103,11 @@ export function createRedactor(secrets: Secret[]): (text: string) => string {
 /**
  * Guard for anything about to be written to a database or sent in an LLM
  * prompt. Throws instead of redacting, because a stored or sent key cannot be
- * taken back.
+ * taken back. Errors, Maps, Sets and byte arrays are checked by content. A value
+ * that cannot be serialized throws too: what cannot be checked is not written.
  */
 export function assertNoSecrets(value: unknown, secrets: Secret[], label: string): void {
-  const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+  const text = typeof value === 'string' ? value : safeStringify(value);
   const redacted = createRedactor(secrets)(text);
   if (redacted === text) return;
   const names = secrets.filter((secret) => redacted.includes(`[REDACTED:${secret.name}]`)).map((secret) => secret.name);
