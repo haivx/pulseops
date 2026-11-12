@@ -12,11 +12,11 @@ I run 2-4 production apps of my own. They are new, with few users, and have had 
 
 The problem is reassurance across too many tabs. It is not diagnosis.
 
-PulseOps is a personal tool first. It is also a portfolio project and the project I am using to learn gstack, but the personal tool goal decides scope questions. There is no revenue goal.
+PulseOps is a personal tool. I may later use it to support my own business. There is no revenue goal.
 
 ## What Makes This Cool
 
-Ops tools assume you want a console, but a console is one more tab. PulseOps v1 has no console. It is one message each morning, watched by an outside service, so the checker cannot die silently. The portfolio story is one person running a small production fleet from a single message, on a small data path with a strict privacy boundary.
+Ops tools assume you want a console, but a console is one more tab. PulseOps v1 has no console. It is one message each morning, watched by an outside service, so the checker cannot die silently.
 
 ## Constraints
 
@@ -25,7 +25,7 @@ Ops tools assume you want a console, but a console is one more tab. PulseOps v1 
 - The Anthropic account is individual. Anthropic's docs say the Admin API, which holds the usage and cost reports, is unavailable to individual accounts. LLM spend must come from usage the apps log themselves.
 - Telemetry must never carry prompts, responses, document IDs or user data.
 - Telemetry must never break or slow an app.
-- The repo is a portfolio piece, so assume it may be public. App names, the subscription list and tokens stay out of git.
+- The repo is public. App names, the subscription list and tokens stay out of git.
 - v1 stays small, and it must not block v2.
 
 ## Premises
@@ -322,7 +322,7 @@ A duplicate can happen in two cases: an ambiguous send in step 2, and the claim-
 
 Because unknown fields reject the batch, new fields roll out in order: the collector learns `v: 2` first, then clients upgrade. The collector keeps accepting `v: 1`.
 
-Before building by-step LLM tracing, compare it with LLM tracing tools such as Langfuse. This was not researched in this session. Building it for the portfolio is a fine outcome, but it should be a choice.
+Before building by-step LLM tracing, compare it with LLM tracing tools such as Langfuse. This was not researched in this session. Building it anyway is a fine outcome, but it should be a choice.
 
 ## Open Questions
 
@@ -334,7 +334,7 @@ Before building by-step LLM tracing, compare it with LLM tracing tools such as L
    - Whether each app's host reports deployments to GitHub, and whether a read of GitHub's deployment statuses returns them. For any app where it does not, choose a platform adapter or `none`. The bought probes cover uptime either way.
    - `waitUntil` for any serverless app that gets a client.
    - Scheduled job support on the host chosen for the note job.
-5. **Console organization (30-minute check):** is creating one free and reversible, and would its usage and cost reports give per-app spend by API key or workspace? This does not decide whether to build the collector, which stays in the plan either way because it covers LLM errors and latency by step, which the cost report does not, and it is the portfolio piece. A positive result gives the note a billing source to reconcile against, or to use for the spend figure.
+5. **Console organization (30-minute check):** is creating one free and reversible, and would its usage and cost reports give per-app spend by API key or workspace? This does not decide whether to build the collector, which stays in the plan either way because it covers LLM errors and latency by step, which the cost report does not. A positive result gives the note a billing source to reconcile against, or to use for the spend figure.
 6. **Free tier figures:** the Better Stack and healthchecks.io limits came from third-party pages. Confirm them on the vendors' pricing pages.
 
 ## Success Criteria
@@ -397,7 +397,7 @@ Before building by-step LLM tracing, compare it with LLM tracing tools such as L
 - Personal deployment on any host that can run the service and the scheduled job, auto-deployed from the main branch. CI runs the tests first.
 - `fleet.yaml` and `subscriptions.yaml` are kept in a separate private repo, so they can be recovered if the laptop is lost. Postgres uses the host's backups if it offers them; otherwise losing the v2 history is accepted.
 - The client is a single TypeScript file vendored into each app that has LLM calls. A package is not worth publishing for 2-4 consumers.
-- The repo is the portfolio artifact: a README with the architecture, the privacy boundary and a sample note using made-up data.
+- The README covers the architecture, the privacy boundary and a sample note using made-up data.
 - `docs/quickstart.md` gives copy-paste commands with expected output, `fleet.example.yaml` is fully annotated, and `.env.example` lists every environment variable.
 - Migrations run before the service starts, and the syncs refuse a schema version mismatch.
 

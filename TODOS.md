@@ -130,13 +130,13 @@
 **Priority:** P4
 **Depends on:** None
 
-## Portfolio
+## Later
 
 ### Local demo mode
 
 **What:** `pulseops note --dry-run --fixtures demo`, rendering each note state from fixtures.
 
-**Why:** Lets a portfolio visitor run the project and see every state without any accounts.
+**Why:** Lets anyone run the project and see every state without any accounts.
 
 **Context:** Deferred at the final gate because the one-day note is the first working thing either way.
 
@@ -148,7 +148,7 @@
 
 **What:** A public read-only view of the fleet.
 
-**Why:** Makes the portfolio piece visible without running it.
+**Why:** Shows fleet health without running the project.
 
 **Context:** Deferred because it would publish the app names that the plan keeps out of git.
 
