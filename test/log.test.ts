@@ -115,3 +115,32 @@ test('a deeply nested value is cut, not lost: the other fields still land', () =
   assert.ok(lines[0]!.includes('[Depth]'));
   assert.equal(entry.serialization_error, undefined);
 });
+
+test('an Error whose message, name or stack is bytes is written as text, so the key is redacted', () => {
+  const key = fakeKey('gh');
+  const lines: string[] = [];
+  const log = createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line));
+  const error = new Error('x');
+  Object.defineProperty(error, 'message', { value: Buffer.from(`token ${key}`) });
+  log.error('failed', { error });
+  assert.ok(!lines[0]!.includes('"data":['), 'the message was written as a byte array');
+  assert.ok(lines[0]!.includes('[REDACTED:GITHUB_TOKEN]'));
+});
+
+test('a boxed String holding the key is written as one string, so the key is redacted', () => {
+  const key = fakeKey('gh');
+  const lines: string[] = [];
+  createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line)).info('x', { token: new String(key) });
+  assert.ok(lines[0]!.includes('[REDACTED:GITHUB_TOKEN]'));
+  assert.ok(!lines[0]!.includes(`"0":"${key[0]}"`), 'the key was written one character per field');
+});
+
+test('a value that shares objects at every level is cut at a node budget, not expanded exponentially', () => {
+  let node: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < 40; i++) node = { a: node, b: node };
+  const lines: string[] = [];
+  createLogger(createRedactor([]), (line) => lines.push(line)).info('x', { body: node, app: 'app-1' });
+  assert.ok(lines[0]!.length < 2_000_000, `line is ${lines[0]!.length} bytes`);
+  assert.ok(lines[0]!.includes('[Truncated]'));
+  assert.equal((JSON.parse(lines[0]!) as Record<string, unknown>).app, 'app-1');
+});

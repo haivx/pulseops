@@ -132,6 +132,26 @@ test('an Error with an own __proto__ property is checked by content, not by its 
   assert.throws(() => assertNoSecrets({ last_error: error }, [{ name: 'GITHUB_TOKEN', value: key }], 'note_runs row'), SecretError);
 });
 
+test('assertNoSecrets fails closed on a value too deep or too large to check in full', () => {
+  const key = fakeKey();
+  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
+  let deep: unknown = { token: key };
+  for (let i = 0; i < 120; i++) deep = { d: deep };
+  assert.throws(() => assertNoSecrets(deep, secrets, 'note_runs row'));
+  let wide: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < 40; i++) wide = { a: wide, b: wide };
+  assert.throws(() => assertNoSecrets(wide, secrets, 'note_runs row'));
+});
+
+test('assertNoSecrets blocks a key in a boxed String or in an Error message made of bytes', () => {
+  const key = fakeKey();
+  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
+  assert.throws(() => assertNoSecrets({ t: new String(key) }, secrets, 'note_runs row'), SecretError);
+  const error = new Error('x');
+  Object.defineProperty(error, 'message', { value: Buffer.from(key) });
+  assert.throws(() => assertNoSecrets({ last_error: error }, secrets, 'note_runs row'), SecretError);
+});
+
 test('assertNoSecrets blocks an LLM prompt that carries a key', () => {
   const key = fakeKey();
   const secrets = [{ name: 'BETTERSTACK_API_TOKEN', value: key }];
