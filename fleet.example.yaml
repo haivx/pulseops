@@ -1,0 +1,9 @@
+# Copy to fleet.yaml (git-ignored) and fill in your apps.
+# Each check maps to a healthchecks.io check by its slug.
+timezone: Asia/Saigon
+apps:
+  - name: app-1
+    checks:
+      - name: worker
+        slug: app-1-worker
+  - name: site
