@@ -326,7 +326,7 @@ Before building by-step LLM tracing, compare it with LLM tracing tools such as L
 
 ## Open Questions
 
-1. **Delivery channel:** email, Telegram or something else. It must be one I already see every morning, and I should decide this before starting the Assignment.
+1. **Delivery channel:** decided 2026-11-12: Telegram, a bot message to my own chat. Sending is not built yet; `pulseops note --dry-run` prints the note instead.
 2. **Prompt caching (update after the 3 mornings):** the schema now has optional cache token fields, because Anthropic's `input_tokens` excludes cached tokens. Check which apps use caching, so the wrapper and price table cover them.
 3. **App sleep (update after the 3 mornings):** an app that sleeps when idle sends no heartbeats, and the note will show `gap`. If one does this, decide how to represent it, for example by marking it short-lived.
 4. **Vendor API checks, not yet tested:**
@@ -403,7 +403,7 @@ Before building by-step LLM tracing, compare it with LLM tracing tools such as L
 
 ## Next Steps
 
-1. Pick the delivery channel (open question 1).
+1. Pick the delivery channel (open question 1). Done: Telegram.
 2. Do the Assignment below. It settles open questions 2 to 6.
 3. Update the README, which still says "One console".
 4. **Note first, about one day:** build the note job with `classify`, Better Stack, healthchecks.io, the GitHub deploy source, subscriptions, `--dry-run` and `doctor`. No client or collector yet. The LLM section prints `not collected yet`, never a dollar figure, and that is not a problem. Config can be a host secret instead of Postgres if the scheduler allows it, in which case the once-per-day claim waits for step 6 and a duplicate note is accepted.
