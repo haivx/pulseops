@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseDocument } from 'yaml';
+import { ConfigError } from './config-error.ts';
 
 // The fleet registry (docs/designs/pulseops-daily-note.md, "App registry"). This
 // slice reads only what the healthchecks.io note needs; later sources add their
@@ -9,8 +10,7 @@ export type FleetCheck = { name: string; slug: string };
 export type FleetApp = { name: string; checks: FleetCheck[] };
 export type Fleet = { timezone: string; apps: FleetApp[] };
 
-export class FleetError extends Error {
-  readonly code = 'E_CONFIG_INVALID';
+export class FleetError extends ConfigError {
   constructor(message: string) {
     super(message);
     this.name = 'FleetError';
@@ -55,6 +55,7 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
 
   const apps: FleetApp[] = [];
   const slugs = new Map<string, string>();
+  const names = new Map<string, string>();
   if (!Array.isArray(root.apps) || root.apps.length === 0) {
     problem('apps', 'has no apps', 'list at least one app; an empty registry must never read as healthy');
   } else {
@@ -67,6 +68,10 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
       const name = entry.name;
       if (typeof name !== 'string' || !APP_NAME.test(name)) {
         problem(`${at}.name`, 'must match ^[a-z0-9-]{1,32}$', 'use lowercase letters, digits and hyphens');
+      } else if (names.has(name)) {
+        problem(`${at}.name`, `repeats app ${name} from ${names.get(name)}`, 'give each app its own name');
+      } else {
+        names.set(name, at);
       }
       const checks: FleetCheck[] = [];
       if (entry.checks !== undefined && entry.checks !== null && !Array.isArray(entry.checks)) {

@@ -104,3 +104,33 @@ test('a bad fleet file exits 2 with the problem and its fix', async () => {
   assert.equal(code, 2);
   assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('no apps'));
 });
+
+test('an unknown flag, an unknown command or an extra argument exits 2 with the usage line', async () => {
+  for (const args of [['note', '--dry-run', '--bogus'], ['notes', '--dry-run'], ['note', 'extra', '--dry-run']]) {
+    const { code, stderr } = await run([...args, '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: fakeKey('hcr') });
+    assert.equal(code, 2, args.join(' '));
+    assert.ok(stderr.includes('E_USAGE') && stderr.includes('usage: pulseops note'), `${args.join(' ')}: ${stderr}`);
+  }
+});
+
+test('an http base URL to another host exits 2 before the key is sent anywhere', async () => {
+  let requests = 0;
+  const server = createServer((_req, res) => {
+    requests += 1;
+    res.end('{"checks":[]}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('server has no port');
+  try {
+    const { code, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
+      HEALTHCHECKS_API_KEY: fakeKey('hcr'),
+      HEALTHCHECKS_API_URL: `http://pulseops-test.invalid:${address.port}`,
+    });
+    assert.equal(code, 2);
+    assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('HEALTHCHECKS_API_URL'));
+    assert.equal(requests, 0);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

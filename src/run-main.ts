@@ -2,8 +2,8 @@ import { createLogger, type Logger } from './log.ts';
 import { createRedactor, readSecret, SecretError, type Secret } from './secrets.ts';
 
 /** Exit codes from the plan: 1 unexpected failure, 2 usage or validation error. */
-const EXIT_FAILURE = 1;
-const EXIT_USAGE = 2;
+export const EXIT_FAILURE = 1;
+export const EXIT_USAGE = 2;
 
 export type CommandContext = { secrets: Secret[]; log: Logger; redact: (text: string) => string };
 
@@ -11,7 +11,8 @@ export type CommandContext = { secrets: Secret[]; log: Logger; redact: (text: st
  * Entry point for every PulseOps command. Reads the named keys from the
  * environment. Everything written through the `log` it passes in, and every
  * error the command throws or leaves uncaught, goes through redaction. Direct
- * `console` or `process.stdout` writes do not, so commands must not use them.
+ * `console` or `process.stdout` writes do not: a command may write its output
+ * to stdout only after that output has passed `assertNoSecrets`.
  *
  * An unexpected failure (thrown, rejected or uncaught) ends the process with
  * exit code 1 once the log line is written, even if a socket or timer is still

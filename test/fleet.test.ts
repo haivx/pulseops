@@ -61,3 +61,7 @@ test('fleet.example.yaml, the file new owners copy, is itself a valid fleet', ()
   const example = loadFleet(fileURLToPath(new URL('../fleet.example.yaml', import.meta.url)));
   assert.ok(example.apps.length > 0);
 });
+
+test('the same app name twice is refused', () => {
+  assert.throws(() => parseFleet('timezone: UTC\napps:\n  - name: a\n  - name: a\n'), (error: unknown) => error instanceof FleetError && error.message.includes('apps[1].name') && error.message.includes('repeats'));
+});

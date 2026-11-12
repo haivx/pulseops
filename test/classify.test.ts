@@ -54,3 +54,16 @@ test('each problem counts once, in fleet order', () => {
   assert.equal(result.problems.length, 3);
   assert.deepEqual(result.workers, { reporting: 0, total: 3, failed: ['app-1/worker', 'app-2/job'] });
 });
+
+test('an ambiguous or unexpected status is unknown, with a fix for each', () => {
+  const result = run({ s1: 'ambiguous', s2: 'unexpected', s3: 'up' });
+  assert.deepEqual(result.problems, [
+    'app-1/worker: unknown (ambiguous). Give each check its own slug in healthchecks.io',
+    'app-1/cron: unknown (unexpected). Check it in healthchecks.io',
+  ]);
+});
+
+test('a fleet with apps but no checks is a problem, never a healthy note', () => {
+  const result = classify({ timezone: 'UTC', apps: [{ name: 'site', checks: [] }] }, new Map());
+  assert.deepEqual(result.problems, ["workers: no checks in fleet.yaml. Add the app's checks"]);
+});

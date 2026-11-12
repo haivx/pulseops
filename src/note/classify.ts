@@ -17,6 +17,7 @@ function unknownProblem(check: string, reason: string): string {
   if (reason === 'new') return `${check}: unknown (new). Ping it once, or fix its slug in fleet.yaml`;
   if (reason === 'missing') return `${check}: unknown (missing). Check its slug in fleet.yaml or create the check`;
   if (reason === 'paused') return `${check}: unknown (paused). Resume the check in healthchecks.io`;
+  if (reason === 'ambiguous') return `${check}: unknown (ambiguous). Give each check its own slug in healthchecks.io`;
   return `${check}: unknown (${reason}). Check it in healthchecks.io`;
 }
 
@@ -44,5 +45,7 @@ export function classify(fleet: Fleet, checks: Map<string, string> | 'unavailabl
       }
     }
   }
+  // An empty registry must never read as healthy.
+  if (workers.total === 0) problems.push("workers: no checks in fleet.yaml. Add the app's checks");
   return { problems, workers, unknown };
 }
