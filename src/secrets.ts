@@ -75,8 +75,12 @@ function decodedAlignments(run: string): string[] {
 }
 
 export function createRedactor(secrets: Secret[]): (text: string) => string {
-  // A Secret built by hand skips readSecret; an empty one would mark every character.
-  for (const secret of secrets) if (secret.value.length < MIN_SECRET_LENGTH) throw invalidSecret(secret.name);
+  // A Secret built by hand skips readSecret, so the same rule applies here: an
+  // empty one would mark every character, and an escape-prone one could leak
+  // in a form the redactor does not know.
+  for (const secret of secrets) {
+    if (secret.value.length < MIN_SECRET_LENGTH || !SECRET_CHARS.test(secret.value)) throw invalidSecret(secret.name);
+  }
   const forms = secrets
     .flatMap((secret) => leakForms(secret.value).map((form) => ({ form, mark: `[REDACTED:${secret.name}]` })))
     .sort((a, b) => b.form.length - a.form.length);

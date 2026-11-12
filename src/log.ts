@@ -13,13 +13,23 @@ export type Logger = {
  * cannot be serialized, they are all replaced by the reason, so the message
  * still lands.
  */
+/** The reason a field could not be serialized, never throwing itself. */
+function describe(error: unknown): string {
+  try {
+    return error instanceof Error ? String(error.message) : String(error);
+  } catch {
+    return 'unserializable field';
+  }
+}
+
 export function createLogger(redact: (text: string) => string, sink: (line: string) => void): Logger {
   const write = (level: string, msg: string, fields: Record<string, unknown> = {}) => {
     let line: string;
     try {
-      line = safeStringify({ level, msg, ...fields });
+      // level and msg last, so a field with the same name cannot replace them.
+      line = safeStringify({ ...fields, level, msg });
     } catch (error) {
-      line = JSON.stringify({ level, msg, serialization_error: error instanceof Error ? error.message : String(error) });
+      line = JSON.stringify({ level, msg, serialization_error: describe(error) });
     }
     sink(redact(line));
   };
