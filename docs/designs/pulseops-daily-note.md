@@ -105,12 +105,12 @@ type DeployEvent = {
 };
 ```
 
-- Each app names its source in the registry: `github` (with a repo and environment), a platform adapter, or `none`.
+- Each app names its source in the registry: `github` (with a repo and the environment name exactly as the host reports it, which on Railway is `<project> / production`), a platform adapter, or `none`.
 - GitHub's deployment statuses are the first source, because one adapter can cover any host that reports deployments to GitHub.
 - A platform adapter is written only for an app that GitHub cannot cover. Each adapter is one function that takes the app's config and returns a `DeployEvent`.
 - An adapter that fails returns `unknown`. If a whole source fails, the note prints one `unknown: <source> unavailable` line. If one app's query fails while the source answers, that app's row shows `deploy unknown`, which counts as one problem.
-- GitHub statuses map as: `success` to `success`; `failure` and `error` to `failure`; `queued`, `pending` and `in_progress` to `in_progress`, or `unknown` if older than 1 hour. `inactive` is skipped in favour of the next status. Anything else maps to `unknown`. For an app configured as `github`, finding no deployment or no status maps to `unknown`, so a mistyped environment cannot silently remove the line. `none` is only for an app configured as `none`.
-- The note prints `deploy success`, `deploy failed`, `deploying` or `deploy unknown`, and nothing for `none`. Only the latest deploy that is not `inactive` counts.
+- GitHub statuses map as: `success` to `success`; `failure` and `error` to `failure`; `queued`, `pending` and `in_progress` to `in_progress`, or `unknown` if older than 1 hour. `inactive` is skipped in favour of the next status. Anything else maps to `unknown`. For an app configured as `github`, finding no deployment maps to `unknown`, so a mistyped environment cannot silently remove the line. A latest deployment with no statuses maps to `none` if it is older than 90 days, because GitHub deletes statuses after 90 days, and to `unknown` otherwise. `none` is only for an app configured as `none`.
+- The note prints `latest deploy: success`, `latest deploy: failure`, `latest deploy: in progress` or `latest deploy: unknown`, and nothing for `none`. Only the latest deploy that is not `inactive` counts. The wording is "latest deploy", not "deploy failed", because Railway also posts `failure` when a service crashes after a deploy, and posts it to older deployments too.
 
 ### Event schema (strict allow-list)
 
@@ -254,9 +254,9 @@ PulseOps, Mon 9 Nov: 1 problem
   app-c: no data. Check the client or collector
 
 Health (24h)
-  app-a  up, 0 incidents, deploy success
-  app-b  up, 1 incident (4 min), deploy success
-  app-c  up, 0 incidents, deploy success
+  app-a  up, 0 incidents, latest deploy: success
+  app-b  up, 1 incident (4 min), latest deploy: success
+  app-c  up, 0 incidents, latest deploy: success
   site   up, 0 incidents
   collector  up, 0 incidents
   workers  3 of 3 reporting now (failed workers are named here)
@@ -276,7 +276,7 @@ Due in the next 7 days
 Every problem is listed under the headline with its next action. If nothing is due, that section says `Nothing due in the next 7 days`. An empty subscriptions table prints `No subscriptions configured` and counts as a problem, so a wrong file cannot read as nothing due. If no app has a client, the LLM spend section is left out.
 
 **Sources:**
-- Each vendor source is read separately with a 10-second timeout: Better Stack, healthchecks.io, and each deploy source. API keys are environment variables on the note job. An enabled source that fails prints `unknown: <source> unavailable`, and the rest of the note still sends. Postgres is different, because the registry lives there. See step 4 under Run once per day.
+- Each vendor source is read separately with a 10-second timeout: Better Stack, healthchecks.io, and each deploy source. Better Stack filters incidents by date only (`from` and `to` are `YYYY-MM-DD`), so the job fetches yesterday and today and keeps incidents whose start falls in the last 24 hours. API keys are environment variables on the note job. An enabled source that fails prints `unknown: <source> unavailable`, and the rest of the note still sends. Postgres is different, because the registry lives there. See step 4 under Run once per day.
 - A source can be structurally unavailable, for example if an API does not work on a free tier. In that case it is disabled in `fleet.yaml`, and the sync writes that to `settings`. This removes it from the note body and the headline rule, and a footer line says `Not checked: <source>`. Temporary failures still show as `unknown`. Vendor statuses use an allow-list: a healthchecks.io check counts as reporting only when it is `up` or `grace`, and a Better Stack monitor counts as up only on its explicit up status. Any other status, including a new, never-pinged, paused or missing check, shows `unknown` on its own line and counts as one problem, so a check that was never wired can never read as healthy.
 - Better Stack and healthchecks.io are what make a health claim possible. Deploy status is optional.
 
@@ -358,7 +358,8 @@ Before building by-step LLM tracing, compare it with LLM tracing tools such as L
   - `all clear` never appears under any condition the headline rule names, tested one at a time, including `deploy unknown`, a `new` check and an empty registry.
   - One healthchecks.io outage with 3 short-lived apps counts as exactly 1 problem.
   - A deleted or paused monitor or check shows `unknown`, and a dead worker with no client is named.
-  - GitHub `error` maps to `failure`, and an unrecognised status maps to `unknown`.
+  - GitHub `error` maps to `failure`, and an unrecognised status maps to `unknown`. A latest deployment with no statuses maps to `none` when older than 90 days and `unknown` otherwise.
+  - Better Stack incidents from a two-day fetch are filtered to the last 24 hours, including one that started just before midnight.
   - Client timers do not keep a short-lived process from exiting.
   - A serverless process with a recorded run and no LLM call prints `no runs`, not `no data`.
   - A second scheduled note run on the same day sends nothing, and `--resend` sends only when `sent_at` is empty.
@@ -434,6 +435,8 @@ The one-day note in Next Steps replaces a hand-written test, because writing a n
 ## Revision note
 
 Revised on 2026-11-09 before /autoplan, at my request: no assumed host, deploy status through one normalized shape, a simpler spend table, more v2 items, and TypeScript/Node only. After /autoplan I took every gate recommendation: note first, personal tool first, cache token fields added, and five rules cut (retention job, unauthenticated rate limit, remove-all flag, dropped remainder logic, two-hash rotation). I kept the collector in the plan regardless of the organization check.
+
+After the vendor spike (`docs/vendor-spike.md`, 2026-11-12) I applied its three findings: Railway environment names, GitHub deleting statuses after 90 days, and Better Stack filtering incidents by date only.
 
 ## What I noticed about how you think
 

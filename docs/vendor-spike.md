@@ -53,7 +53,7 @@ Observed on app-1 (hosted on Railway):
 2. Better Stack incidents filter by date only.
 3. With Railway, "deploy failed" may mislead; `latest deploy: failure` is more accurate.
 
-None of these is applied to the plan yet.
+All three were applied to the plan on 2026-11-12.
 
 ## Summary
 
@@ -75,4 +75,4 @@ Closed 2026-11-12.
 | Anthropic Console organization | Not checked | Manual check in open question 5; no key created |
 | Free-tier limits | Not checked | Vendor pricing pages not read in this spike |
 
-Carried forward: the ping check and the remaining monitors and checks move to the setup item in `TODOS.md`. The three open findings need a decision before the note job is built.
+Carried forward: the ping check and the remaining monitors and checks move to the setup item in `TODOS.md`. The three open findings are applied to the plan.
