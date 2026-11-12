@@ -1,0 +1,9 @@
+{
+  "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
+  "runner": "node --test {files}",
+  "dependencies": {
+    "package.json": ["test/secrets.test.ts", "test/log.test.ts", "test/no-leak.e2e.test.ts", "test/vendor-http.test.ts"],
+    "package-lock.json": ["test/secrets.test.ts", "test/log.test.ts", "test/no-leak.e2e.test.ts", "test/vendor-http.test.ts"],
+    "tsconfig.json": ["test/secrets.test.ts", "test/log.test.ts", "test/no-leak.e2e.test.ts", "test/vendor-http.test.ts"]
+  }
+}
