@@ -2,8 +2,41 @@
   "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
   "runner": "node --test {files}",
   "dependencies": {
-    "package.json": ["test/secrets.test.ts", "test/log.test.ts", "test/no-leak.e2e.test.ts", "test/vendor-http.test.ts"],
-    "package-lock.json": ["test/secrets.test.ts", "test/log.test.ts", "test/no-leak.e2e.test.ts", "test/vendor-http.test.ts"],
-    "tsconfig.json": ["test/secrets.test.ts", "test/log.test.ts", "test/no-leak.e2e.test.ts", "test/vendor-http.test.ts"]
+    "package.json": [
+      "test/secrets.test.ts",
+      "test/log.test.ts",
+      "test/no-leak.e2e.test.ts",
+      "test/vendor-http.test.ts",
+      "test/fleet.test.ts",
+      "test/healthchecks.test.ts",
+      "test/classify.test.ts",
+      "test/render.test.ts",
+      "test/note.e2e.test.ts"
+    ],
+    "package-lock.json": [
+      "test/secrets.test.ts",
+      "test/log.test.ts",
+      "test/no-leak.e2e.test.ts",
+      "test/vendor-http.test.ts",
+      "test/fleet.test.ts",
+      "test/healthchecks.test.ts",
+      "test/classify.test.ts",
+      "test/render.test.ts",
+      "test/note.e2e.test.ts"
+    ],
+    "tsconfig.json": [
+      "test/secrets.test.ts",
+      "test/log.test.ts",
+      "test/no-leak.e2e.test.ts",
+      "test/vendor-http.test.ts",
+      "test/fleet.test.ts",
+      "test/healthchecks.test.ts",
+      "test/classify.test.ts",
+      "test/render.test.ts",
+      "test/note.e2e.test.ts"
+    ],
+    "fleet.example.yaml": [
+      "test/fleet.test.ts"
+    ]
   }
 }

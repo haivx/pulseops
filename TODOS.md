@@ -16,6 +16,18 @@
 
 ## Note
 
+### Send the note to Telegram
+
+**What:** `pulseops note` (without `--dry-run`) sends the rendered note as a Telegram bot message to the owner's chat.
+
+**Why:** The owner chose Telegram as the delivery channel (open question 1, 2026-11-12). Until this lands the note only prints.
+
+**Context:** Read the bot token and chat id with `readSecret`, call `assertNoSecrets(note, secrets, 'Telegram message')` before sending, and send through a redacting HTTP call (the bot token is part of Telegram's URL, so it must be one of the redactor's secrets). Retry delivery up to 3 times with backoff, as in "Run once per day" step 2, then ping healthchecks.io only after delivery.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** `pulseops note --dry-run`
+
 ### Subscription price history
 
 **What:** Record each price change for a subscription.
