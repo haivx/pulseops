@@ -118,6 +118,40 @@
 
 ## Secrets guard
 
+### Logger takes typed fields, not objects
+
+**What:** Replace "serialize anything, then redact" with a logger that cannot be handed an object:
+- `log(level, msg, fields)` where each field is only `string | number | boolean` or an `E_*` code; the type rejects objects and Errors.
+- One `formatError(err)` that writes the class, the `E_*` code, the status and the URL already redacted. It never writes a third-party library's message or stack.
+- `assertNoSecrets` runs on the final string that is written or sent, never on an object.
+- When done, delete the serializer branches nothing uses any more (Buffer, Map, Set, cycles, depth and node limits).
+
+**Why:** Three review rounds kept finding new value shapes the serializer misread (bytes, boxed strings, shared graphs, getters). Typed fields remove the whole class instead of patching each shape. The owner decided on 2026-11-12 that the serializer gets no more patches after `chore/logger-hardening`.
+
+**Context:** Supersedes most of "Logger follow-ups after hardening" and "Encodings and checks the redactor still misses" below; close those items that no longer apply when this lands.
+
+**Effort:** M
+**Priority:** P1
+**Depends on:** `chore/logger-hardening` merged
+
+### Logger follow-ups after hardening
+
+**What:** Left open by the `chore/logger-hardening` review (the owner fixed only the leak regressions there):
+1. An own `toJSON` on an Error replaces the whole serialized Error (`src/serialize.ts`, Error branch); drop function-valued children.
+2. `stack` and `cause` getters are read twice in the Error branch.
+3. The 3xx hint lowercases the host, so a key in a `Location` host escapes redaction; redact the raw `Location` first and omit the hint if it held a key (`src/vendor-http.ts` `redirectHint`).
+4. Log lines put `level` and `msg` last since the override fix; put them first and rename colliding fields.
+5. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw.
+6. Tests: the logger fallback with a thrown `Object.create(null)`, and a second `runMain` call.
+7. Doc drift: `describe()` sits between `createLogger`'s JSDoc and the function; `docs/rules/secrets.md` "How it is tested" omits the floating and stall cases and the new vendor-http tests; the `runMain` docstring and this file's Completed note should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
+8. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
+
+**Why:** None leaks a key in the current flow; most go away with the typed logger above.
+
+**Effort:** S
+**Priority:** P2 (item 8 is P1 at deploy time)
+**Depends on:** None
+
 ### Encodings and checks the redactor still misses
 
 **What:** The two points the `chore/logger-hardening` PR left open.
@@ -189,4 +223,4 @@
 
 ### Logger and redactor hardening
 
-**Completed:** `chore/logger-hardening` (2026-11-12). `createRedactor` applies the same character rule as `readSecret`; a failing run exits after 2 seconds even if stderr never drains; `safeStringify` caps depth at 100, writes shared objects in full and keeps an own `__proto__` as data; a field cannot replace `level` or `msg`, and the logger fallback never throws; `getJson` messages carry the URL redacted, and a 3xx names the origin it points to; the `uncaughtException` and `unhandledRejection` handlers are installed once; tests cover a floating rejection, a body that is not JSON (cause included) and base64 offset 1.
+**Completed:** `chore/logger-hardening` (2026-11-12). `createRedactor` applies the same character rule as `readSecret`; a failing run exits after 2 seconds even if stderr never drains (not on Linux, where a full pipe blocks first); `safeStringify` caps depth at 100 and nodes at 10,000, writes shared objects in full within that budget, unboxes boxed primitives, writes an Error message made of bytes as text and keeps an own `__proto__` as data; `assertNoSecrets` throws instead of passing a value past those limits; a field cannot replace `level` or `msg`, and the logger fallback never throws; `getJson` messages carry the URL redacted, and a 3xx names the origin it points to; the `uncaughtException` and `unhandledRejection` handlers are installed once; tests cover a floating rejection, a full stderr, a body that is not JSON (cause included) and base64 offset 1.
