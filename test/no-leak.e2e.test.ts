@@ -24,7 +24,7 @@ function run(env: Record<string, string>, script = fixture): Promise<{ code: num
   });
 }
 
-for (const mode of ['timer', 'reject']) {
+for (const mode of ['timer', 'reject', 'floating']) {
   test(`a ${mode} failure with an open handle exits 1 promptly and prints no form of the key`, async () => {
     const key = fakeKey('hcu');
     const { code, output } = await run({ HEALTHCHECKS_API_KEY: key, FAIL_MODE: mode }, uncaughtFixture);
@@ -53,4 +53,19 @@ test('a process with the key missing exits 2 and names the variable', async () =
   assert.equal(code, 2);
   assert.ok(output.includes('E_CONFIG_MISSING'));
   assert.ok(output.includes('HEALTHCHECKS_API_KEY'));
+});
+
+// On Linux a pipe write is synchronous, so a full pipe blocks the process
+// before any timer can run; the 2-second fallback only helps where pipe
+// writes are asynchronous (macOS, Windows).
+test('a failure while stderr is full still exits 1 within 5 seconds', { skip: process.platform === 'linux' ? 'pipe writes block on Linux' : false }, async () => {
+  const child = spawn(process.execPath, [uncaughtFixture], {
+    env: { PATH: process.env.PATH ?? '', HEALTHCHECKS_API_KEY: fakeKey('hcs'), FAIL_MODE: 'stall' },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), HANG_LIMIT_MS);
+  const code = await new Promise<number | null>((resolve) => child.on('exit', (exitCode) => resolve(exitCode)));
+  clearTimeout(timer);
+  child.stderr?.destroy();
+  assert.equal(code, 1, 'the process must exit 1, not hang on a full stderr');
 });
