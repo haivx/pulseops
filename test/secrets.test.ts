@@ -40,11 +40,20 @@ test('redactor replaces raw, URL-encoded and base64 forms of every secret', () =
 });
 
 test('readSecret rejects characters that JSON or URL encoding would change, without echoing the value', () => {
-  const value = `${fakeKey()}"x`;
-  assert.throws(
-    () => readSecret({ GITHUB_TOKEN: value }, 'GITHUB_TOKEN'),
-    (error: unknown) => error instanceof SecretError && error.code === 'E_CONFIG_INVALID' && !error.message.includes(value),
-  );
+  // + / = ~ are escaped by some encoders (.NET writes + as +, URLSearchParams writes ~ as %7E).
+  for (const char of ['"', '+', '/', '=', '~', ' ']) {
+    const value = `${fakeKey()}${char}x`;
+    assert.throws(
+      () => readSecret({ GITHUB_TOKEN: value }, 'GITHUB_TOKEN'),
+      (error: unknown) => error instanceof SecretError && error.code === 'E_CONFIG_INVALID' && !error.message.includes(value),
+      `a key containing ${JSON.stringify(char)} was accepted`,
+    );
+  }
+});
+
+test('readSecret accepts letters, digits, dots, underscores and hyphens', () => {
+  const key = `${fakeKey('github_pat')}.v1-${randomBytes(4).toString('hex').toUpperCase()}`;
+  assert.equal(readSecret({ GITHUB_TOKEN: key }, 'GITHUB_TOKEN').value, key);
 });
 
 test('createRedactor refuses a secret too short to redact safely', () => {
@@ -109,9 +118,9 @@ test('assertNoSecrets blocks a key in any Error property, an AggregateError, or 
   }
 });
 
-test('readSecret accepts + / = . ~ - and the redactor removes every escaped form of such a key', () => {
+test('redactor removes every escaped form of a hand-built secret with + / = . ~ -', () => {
+  // readSecret rejects these characters; a Secret built by hand still reaches createRedactor.
   const key = `${randomBytes(18).toString('base64')}.~-+/=`;
-  assert.equal(readSecret({ K: key }, 'K').value, key);
   const lowerPercent = (text: string) => text.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
   const jsonSlash = key.replaceAll('/', '\\/');
   const searchParam = new URLSearchParams({ k: key }).toString().slice('k='.length);

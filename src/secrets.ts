@@ -17,16 +17,17 @@ export class SecretError extends Error {
 const MIN_SECRET_LENGTH = 16;
 
 /**
- * Characters that JSON escaping and URL encoding leave alone, apart from
- * `+ / =` whose encoded forms the redactor knows. A key with any other
+ * Characters no common encoder escapes: JSON writers (.NET writes `+` as
+ * `\u002B`, some write `/` as `\/`), URL encoders (`~` becomes `%7E` in
+ * URLSearchParams) and base64url all leave these alone. A key with any other
  * character could leak in an escaped form the redactor does not recognize.
  */
-const SECRET_CHARS = /^[A-Za-z0-9._~+/=-]+$/;
+const SECRET_CHARS = /^[A-Za-z0-9._-]+$/;
 
 function invalidSecret(name: string): SecretError {
   return new SecretError(
     'E_CONFIG_INVALID',
-    `pulseops E_CONFIG_INVALID: ${name} is shorter than ${MIN_SECRET_LENGTH} characters or has characters other than A-Z a-z 0-9 . _ ~ + / = -; fix: copy the full key again`,
+    `pulseops E_CONFIG_INVALID: ${name} is shorter than ${MIN_SECRET_LENGTH} characters or has characters other than A-Z a-z 0-9 . _ -; fix: copy the full key again`,
   );
 }
 

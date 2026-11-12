@@ -123,3 +123,36 @@ test('an unreachable vendor fails with E_VENDOR_UNREACHABLE and the logged error
   assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'), 'the key position is marked');
   for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached the log');
 });
+
+// Value: protects=a 2xx body that breaks off mid-read gives E_VENDOR_UNREACHABLE with the status, and the logged error,
+// cause included, shows no form of a key in the URL; fails_when=the body-read catch is removed or recoded, or its cause
+// escapes redaction; why_new=no test reaches the body-read branch, the only one that keeps a cause after a response;
+// seam=none; no_claim=a body read that times out
+test('a 2xx body cut off mid-read fails with E_VENDOR_UNREACHABLE and the logged error holds no form of the key', async () => {
+  const key = fakeKey('hc');
+  const redact = createRedactor([{ name: 'HEALTHCHECKS_API_KEY', value: key }]);
+  const lines: string[] = [];
+  const log = createLogger(redact, (line) => lines.push(line));
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+    res.write('{"checks":');
+    setTimeout(() => res.socket?.destroy(), 20);
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('server has no port');
+  try {
+    await assert.rejects(
+      getJson(`http://127.0.0.1:${address.port}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }, redact),
+      (error: unknown) => {
+        log.error('read failed', { error });
+        return error instanceof VendorHttpError && error.code === 'E_VENDOR_UNREACHABLE' && error.status === 200;
+      },
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  const output = lines.join('\n');
+  assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'));
+  for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached the log');
+});
