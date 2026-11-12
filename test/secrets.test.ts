@@ -135,3 +135,26 @@ test('assertNoSecrets blocks an LLM prompt that carries a key', () => {
   const prompt = `Summarize this error: Authorization: Bearer ${key}`;
   assert.throws(() => assertNoSecrets(prompt, secrets, 'LLM prompt'), SecretError);
 });
+
+// Value: protects=assertNoSecrets fails closed when a value cannot be serialized; fails_when=a catch around safeStringify lets an unchecked
+// value pass as clean; why_new=no test gives assertNoSecrets an unserializable value; seam=none; no_claim=other serializer failures (one throwing toJSON)
+test('assertNoSecrets throws for a value it cannot serialize instead of passing it', () => {
+  const secrets = [{ name: 'GITHUB_TOKEN', value: fakeKey() }];
+  const row = {
+    app: 'app-1',
+    detail: {
+      toJSON() {
+        throw new Error('cannot serialize');
+      },
+    },
+  };
+  assert.throws(() => assertNoSecrets(row, secrets, 'note_runs row'));
+});
+
+// Value: protects=a long base64-like run with no key passes through the redactor unchanged; fails_when=the base64 pass rewrites or marks runs
+// that decode to no key; why_new=the clean-text test has no 20+ character run; seam=none; no_claim=every path shape (one path, one key)
+test('redactor leaves a long base64-like path without a key unchanged', () => {
+  const redact = createRedactor([{ name: 'GITHUB_TOKEN', value: fakeKey() }]);
+  const path = '/Users/abc/Documents/project/src/file/name';
+  assert.equal(redact(`read failed for ${path}`), `read failed for ${path}`);
+});
