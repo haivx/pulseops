@@ -1,5 +1,19 @@
 # TODOS
 
+## Setup
+
+### Create a monitor and checks for every app
+
+**What:** A Better Stack monitor for each app and for the collector, and a healthchecks.io check for each worker, job or service, with the worker ping wired in each app.
+
+**Why:** The spike found one monitor and one never-pinged check. The note reads every registered monitor and check, so a missing or never-pinged one shows `unknown` and blocks `all clear`.
+
+**Context:** Done at build time. Ping the first check once and confirm `n_pings`, `last_ping` and `status` change through the read-only API, which the spike did not get to. Use exact Railway environment names (`<project> / production`) for each app's GitHub deploy source. Put checks in one healthchecks.io project if possible, since read-only keys are per project. See `docs/vendor-spike.md`.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** None
+
 ## Note
 
 ### Subscription price history
