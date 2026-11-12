@@ -85,7 +85,7 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
           }
           if (!nonEmptyString(check.name)) problem(`${cat}.name`, 'is missing', 'name the worker, job or service');
           if (!nonEmptyString(check.slug)) {
-            problem(`${cat}.slug`, check.slug === undefined || check.slug === null || check.slug === '' ? 'is missing' : 'must be text', "copy the check's slug from healthchecks.io");
+            problem(`${cat}.slug`, typeof check.slug === 'string' || check.slug === undefined || check.slug === null ? 'is missing' : 'must be text', "copy the check's slug from healthchecks.io");
           } else if (slugs.has(check.slug)) {
             problem(`${cat}.slug`, `repeats slug ${check.slug} from ${slugs.get(check.slug)}`, 'give each check its own slug');
           } else {

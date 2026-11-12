@@ -74,3 +74,73 @@ test('logger writes one JSON line per call with level and message', () => {
   assert.equal(entry.msg, 'note sent');
   assert.equal(entry.app_count, 3);
 });
+
+test('an object referenced twice is written in full both times; only a true cycle is [Circular]', () => {
+  const lines: string[] = [];
+  const log = createLogger(createRedactor([]), (line) => lines.push(line));
+  const shared = { app: 'app-1' };
+  const cycle: Record<string, unknown> = { step: 'fetch' };
+  cycle.self = cycle;
+  log.info('x', { a: shared, b: shared, cycle });
+  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
+  assert.deepEqual(entry.a, shared);
+  assert.deepEqual(entry.b, shared);
+  assert.deepEqual(entry.cycle, { step: 'fetch', self: '[Circular]' });
+});
+
+test('a field named level or msg cannot overwrite the real ones', () => {
+  const lines: string[] = [];
+  createLogger(createRedactor([]), (line) => lines.push(line)).info('real', { level: 'error', msg: 'fake' });
+  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
+  assert.equal(entry.level, 'info');
+  assert.equal(entry.msg, 'real');
+});
+
+test('logger never throws when a field cannot be serialized, even if the error is hostile', () => {
+  const lines: string[] = [];
+  const log = createLogger(createRedactor([]), (line) => lines.push(line));
+  assert.doesNotThrow(() => log.error('failed', { bad: { toJSON() { throw new Error('boom'); } } }));
+  assert.deepEqual(JSON.parse(lines[0]!), { level: 'error', msg: 'failed', serialization_error: 'boom' });
+  const hostile = { toJSON() { throw { get message(): string { throw new Error('nested'); } }; } };
+  assert.doesNotThrow(() => log.error('failed again', { hostile }));
+  assert.equal((JSON.parse(lines[1]!) as Record<string, unknown>).msg, 'failed again');
+});
+
+test('a deeply nested value is cut, not lost: the other fields still land', () => {
+  const lines: string[] = [];
+  const log = createLogger(createRedactor([]), (line) => lines.push(line));
+  log.info('ok', { body: JSON.parse(`${'['.repeat(6000)}${']'.repeat(6000)}`), app: 'app-1' });
+  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
+  assert.equal(entry.app, 'app-1');
+  assert.ok(lines[0]!.includes('[Depth]'));
+  assert.equal(entry.serialization_error, undefined);
+});
+
+test('an Error whose message, name or stack is bytes is written as text, so the key is redacted', () => {
+  const key = fakeKey('gh');
+  const lines: string[] = [];
+  const log = createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line));
+  const error = new Error('x');
+  Object.defineProperty(error, 'message', { value: Buffer.from(`token ${key}`) });
+  log.error('failed', { error });
+  assert.ok(!lines[0]!.includes('"data":['), 'the message was written as a byte array');
+  assert.ok(lines[0]!.includes('[REDACTED:GITHUB_TOKEN]'));
+});
+
+test('a boxed String holding the key is written as one string, so the key is redacted', () => {
+  const key = fakeKey('gh');
+  const lines: string[] = [];
+  createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line)).info('x', { token: new String(key) });
+  assert.ok(lines[0]!.includes('[REDACTED:GITHUB_TOKEN]'));
+  assert.ok(!lines[0]!.includes(`"0":"${key[0]}"`), 'the key was written one character per field');
+});
+
+test('a value that shares objects at every level is cut at a node budget, not expanded exponentially', () => {
+  let node: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < 40; i++) node = { a: node, b: node };
+  const lines: string[] = [];
+  createLogger(createRedactor([]), (line) => lines.push(line)).info('x', { body: node, app: 'app-1' });
+  assert.ok(lines[0]!.length < 2_000_000, `line is ${lines[0]!.length} bytes`);
+  assert.ok(lines[0]!.includes('[Truncated]'));
+  assert.equal((JSON.parse(lines[0]!) as Record<string, unknown>).app, 'app-1');
+});

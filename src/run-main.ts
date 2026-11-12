@@ -5,6 +5,12 @@ import { createRedactor, readSecret, SecretError, type Secret } from './secrets.
 export const EXIT_FAILURE = 1;
 export const EXIT_USAGE = 2;
 
+/** How long a failing run waits for stderr to flush before it exits anyway. */
+const EXIT_FLUSH_LIMIT_MS = 2000;
+
+let handlersInstalled = false;
+let activeFail: ((error: unknown) => void) | undefined;
+
 export type CommandContext = { secrets: Secret[]; log: Logger; redact: (text: string) => string };
 
 /**
@@ -42,9 +48,18 @@ export async function runMain(secretNames: string[], command: (context: CommandC
     log.error('unexpected failure', { error });
     // Exit after stderr has taken the line; the callback runs once it is flushed.
     process.stderr.write('', () => process.exit(EXIT_FAILURE));
+    // If stderr never drains (a reader that stopped reading), exit anyway.
+    // Where pipe writes are synchronous (Linux), a full pipe blocks before
+    // this timer can run; that case needs the reader to drain the pipe.
+    setTimeout(() => process.exit(EXIT_FAILURE), EXIT_FLUSH_LIMIT_MS).unref();
   };
-  process.on('uncaughtException', fail);
-  process.on('unhandledRejection', fail);
+  activeFail = fail;
+  if (!handlersInstalled) {
+    // Installed once per process; each runMain call points them at its own fail.
+    handlersInstalled = true;
+    process.on('uncaughtException', (error) => activeFail?.(error));
+    process.on('unhandledRejection', (error) => activeFail?.(error));
+  }
 
   if (configErrors.length > 0) {
     for (const error of configErrors) log.error(error.message, { code: error.code });

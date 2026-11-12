@@ -1,6 +1,6 @@
 // Domain rule: API keys are read only from the environment, and never reach a
 // log, a database row in plain text, or an LLM prompt. See docs/rules/secrets.md.
-import { safeStringify } from './serialize.ts';
+import { strictStringify } from './serialize.ts';
 
 export type Secret = { name: string; value: string };
 
@@ -75,8 +75,12 @@ function decodedAlignments(run: string): string[] {
 }
 
 export function createRedactor(secrets: Secret[]): (text: string) => string {
-  // A Secret built by hand skips readSecret; an empty one would mark every character.
-  for (const secret of secrets) if (secret.value.length < MIN_SECRET_LENGTH) throw invalidSecret(secret.name);
+  // A Secret built by hand skips readSecret, so the same rule applies here: an
+  // empty one would mark every character, and an escape-prone one could leak
+  // in a form the redactor does not know.
+  for (const secret of secrets) {
+    if (secret.value.length < MIN_SECRET_LENGTH || !SECRET_CHARS.test(secret.value)) throw invalidSecret(secret.name);
+  }
   const forms = secrets
     .flatMap((secret) => leakForms(secret.value).map((form) => ({ form, mark: `[REDACTED:${secret.name}]` })))
     .sort((a, b) => b.form.length - a.form.length);
@@ -108,7 +112,7 @@ export function createRedactor(secrets: Secret[]): (text: string) => string {
  * that cannot be serialized throws too: what cannot be checked is not written.
  */
 export function assertNoSecrets(value: unknown, secrets: Secret[], label: string): void {
-  const text = typeof value === 'string' ? value : safeStringify(value);
+  const text = typeof value === 'string' ? value : strictStringify(value);
   const redacted = createRedactor(secrets)(text);
   if (redacted === text) return;
   const names = secrets.filter((secret) => redacted.includes(`[REDACTED:${secret.name}]`)).map((secret) => secret.name);

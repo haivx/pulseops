@@ -156,3 +156,54 @@ test('a 2xx body cut off mid-read fails with E_VENDOR_UNREACHABLE and the logged
   assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'));
   for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached the log');
 });
+
+test('a body that is not JSON leaves nothing of the body in the log, cause included', async () => {
+  const key = fakeKey('bs');
+  const redact = createRedactor([{ name: 'BETTERSTACK_API_TOKEN', value: key }]);
+  const lines: string[] = [];
+  const log = createLogger(redact, (line) => lines.push(line));
+  const server = await serve(200, `${key} is not JSON`);
+  try {
+    await assert.rejects(getJson(`${server.url}/api/v2/monitors`, {}, redact), (error: unknown) => {
+      log.error('read failed', { error });
+      return error instanceof VendorHttpError && error.code === 'E_VENDOR_BAD_JSON' && error.cause === undefined;
+    });
+  } finally {
+    await server.close();
+  }
+  assert.ok(longestPrefix(lines.join('\n'), key) < 8, 'part of the body reached the log');
+});
+
+test('error messages carry the URL already redacted, so a saved message holds no key', async () => {
+  const key = fakeKey('hc');
+  const redact = createRedactor([{ name: 'HEALTHCHECKS_API_KEY', value: key }]);
+  const server = await serve(401, 'no');
+  try {
+    await assert.rejects(
+      getJson(`${server.url}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, {}, redact),
+      (error: unknown) => error instanceof VendorHttpError && !error.message.includes(key) && error.message.includes('[REDACTED:HEALTHCHECKS_API_KEY]'),
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test('a 3xx error names the origin it points to, never its path or query', async () => {
+  const redirecting = createServer((_req, res) => {
+    res.writeHead(301, { location: 'https://new.example.com/v4/checks/?token=abc' });
+    res.end();
+  });
+  await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve));
+  const address = redirecting.address();
+  if (address === null || typeof address === 'string') throw new Error('server has no port');
+  try {
+    await assert.rejects(getJson(`http://127.0.0.1:${address.port}/api/v3/checks/`, {}, (t) => t), (error: unknown) =>
+      error instanceof VendorHttpError &&
+      error.status === 301 &&
+      error.message.includes('redirects to https://new.example.com') &&
+      !error.message.includes('token=abc'),
+    );
+  } finally {
+    await new Promise<void>((resolve) => redirecting.close(() => resolve()));
+  }
+});

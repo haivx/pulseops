@@ -118,58 +118,56 @@
 
 ## Secrets guard
 
-### Logger and redactor hardening
+### Logger takes typed fields, not objects
 
-**What:** One PR, `chore/logger-hardening`, right after PR #2 merges. It covers the points the PR #2 review left open. Do (5) and (1) first, then (8), (9) and (10). Write each test first and watch it fail.
+**What:** Replace "serialize anything, then redact" with a logger that cannot be handed an object:
+- `log(level, msg, fields)` where each field is only `string | number | boolean` or an `E_*` code; the type rejects objects and Errors.
+- One `formatError(err)` that writes the class, the `E_*` code, the status and the URL already redacted. It never writes a third-party library's message or stack.
+- `assertNoSecrets` runs on the final string that is written or sent, never on an object.
+- When done, delete the serializer branches nothing uses any more (Buffer, Map, Set, cycles, depth and node limits).
 
-1. **Redactor accepts escape-prone hand-built secrets.** `src/secrets.ts:77` `createRedactor` checks only the length of a `Secret` built by hand, not `SECRET_CHARS` (now `A-Z a-z 0-9 . _ -`). If such a value contains `+ / = ~ " \`, it can leak in an escaped form the redactor does not know, such as `\u002B` from .NET JSON or `%7E` from `URLSearchParams`. `runMain` is safe because it only uses `readSecret`. Rewrite `test/secrets.test.ts:121` ("redactor removes every escaped form of a hand-built secret with + / = . ~ -"), which currently asserts the old behavior, into a rejection test. Any app token PulseOps generates itself, such as the collector's, must use only these characters (hex or base64url without padding). Fix: `if (secret.value.length < MIN_SECRET_LENGTH || !SECRET_CHARS.test(secret.value)) throw invalidSecret(secret.name);`. Test:
-   ```ts
-   test('createRedactor refuses a hand-built secret with escape-prone characters', () => {
-     const value = `${randomBytes(12).toString('hex')}"`;
-     assert.throws(() => createRedactor([{ name: 'K', value }]), { code: 'E_CONFIG_INVALID' });
-   });
-   ```
-2. **Repeated references are logged as `[Circular]`.** `src/serialize.ts:33` `seen` is never cleared, so an object referenced twice, such as one error in two fields, shows `"[Circular]"` the second time. Fix: track only the current ancestor path, for example by walking the value before `JSON.stringify`. Test:
-   ```ts
-   test('safeStringify writes a shared non-circular object in full each time', () => {
-     const shared = { app: 'app-1' };
-     assert.deepEqual(JSON.parse(safeStringify({ a: shared, b: shared })), { a: shared, b: shared });
-   });
-   ```
-3. **A field can overwrite `level` or `msg`.** `src/log.ts:20` builds `{ level, msg, ...fields }`, so a field named `level` or `msg` replaces the real one. Fix: `{ ...fields, level, msg }`. Test: `log.info('real', { level: 'error', msg: 'fake' })` gives `level: 'info'` and `msg: 'real'`.
-4. **The logger fallback can still throw.** `src/log.ts:21-22`: the fallback calls `error.message` or `String(error)`, which can throw on a hostile getter or `toString`. Wrap the fallback in its own try that writes a constant `serialization_error`. Test:
-   ```ts
-   test('logger never throws when a field cannot be serialized', () => {
-     const lines: string[] = [];
-     const log = createLogger(createRedactor([]), (l) => lines.push(l));
-     assert.doesNotThrow(() => log.error('failed', { bad: { toJSON() { throw new Error('boom'); } } }));
-     const entry = JSON.parse(lines[0]!);
-     assert.equal(entry.msg, 'failed');
-     assert.equal(entry.serialization_error, 'boom');
-   });
-   ```
-5. **Exit depends on the stderr callback.** `src/run-main.ts:43` exits only in the `process.stderr.write('', cb)` callback. If stderr stalls or is destroyed while a handle is open, the process still hangs. Fix: add `setTimeout(() => process.exit(EXIT_FAILURE), 2000).unref()` next to it. Test: an e2e fixture that fails with an open handle while the parent never reads stderr, then asserts exit 1 within 5 seconds.
-6. **The BAD_JSON test does not guard the cause.** `test/vendor-http.test.ts:78` checks only `error.message`. If `{ cause }` is put back on the `E_VENDOR_BAD_JSON` throw (`src/vendor-http.ts:54`), the SyntaxError would quote about 10 characters of the body and the test would still pass. Fix: log the rejected error through `createLogger` and assert `longestPrefix(line, key) < 8`.
-7. **Base64 offset 1 is untested.** `test/secrets.test.ts:67` covers offsets 2 and 3 (and 0 elsewhere). Add a one-character prefix case: `` `a${basic}` ``.
+**Why:** Three review rounds kept finding new value shapes the serializer misread (bytes, boxed strings, shared graphs, getters). Typed fields remove the whole class instead of patching each shape. The owner decided on 2026-11-12 that the serializer gets no more patches after `chore/logger-hardening`.
 
-Found by the pass-3 review:
+**Also from the last `chore/logger-hardening` review round, not patched under the stop rule in CLAUDE.md:** a boxed `String` with its own `valueOf` can return a Buffer that skips byte-to-text conversion; `SerializeLimitError` is not a `SecretError` and has no `code`, though its message says `E_SECRET_IN_OUTPUT`; and the 10,000-node strict budget rejects a large but linear value such as a batch of rows. None is reachable today (the only `assertNoSecrets` caller passes a string), and checking the final string removes all three.
 
-8. **Deep nesting overflows `safeStringify`.** `src/serialize.ts:28`: the replacer roughly halves how deep `JSON.stringify` can go. A 12 KB vendor body of `[`×6000 then `]`×6000 parses in `getJson`. Logging it then drops every field, leaving only `serialization_error: "Maximum call stack size exceeded"`. On a thrown error, `fail` logs no error at all. `assertNoSecrets` throws a `RangeError` (it fails closed). Fix: track depth in the replacer and write `"[Depth]"` past a cap, or catch per field in the logger. Test: log `{ body: JSON.parse('['.repeat(6000) + ']'.repeat(6000)), app: 'app-1' }` and assert `app` is kept.
-9. **Raw URL in `getJson` error messages.** `src/vendor-http.ts:32, 36, 45, 54` put `${url}` in `error.message` even though `redact` is in scope. The logger redacts it, but a command that saves `error.message` to a row or a prompt depends on `assertNoSecrets`. Fix: use `redact(url)` in every message. Test: a URL with `?api_key=<key>` gives a message without the key.
-10. **The `unhandledRejection` handler is untested.** `src/run-main.ts:46`: deleting it leaves all 32 tests passing, and Node's default handler would print the key unredacted. Test: in `test/fixtures/uncaught-with-key.ts`, add `if (process.env.FAIL_MODE === 'floating') { void Promise.reject(new Error(`floating failure for ${key}`)); return; }`, and add `'floating'` to the mode loop in `test/no-leak.e2e.test.ts`.
-11. **Resolved in PR #2 for keys read through `readSecret`.** Keys with `~` leaked in base64url or URL-encoded base64. `readSecret` now accepts only `A-Z a-z 0-9 . _ -`, whose base64 never contains `+` or `/`, so `BASE64_RUN` (`src/secrets.ts:70`) needs no base64url or `%2B %2F %3D` handling. The hand-built case is item 1.
-12. **Hex and double encodings are not recognized.** `util.inspect` prints Buffers as `<Buffer 6b 65 ...>` inside error messages. Hex, double URL-encoding and base64 of the URL-encoded key were all missed. Decide which encodings count as the key.
-13. **`assertNoSecrets` can check something other than what is written.** `src/serialize.ts`: it misses `toString` with private fields used through `${obj}`, symbol and non-enumerable properties, `SharedArrayBuffer`, and cross-realm Errors (use `Error.isError`). An own enumerable `__proto__` property on an Error sets the prototype in `serializeError` (`src/serialize.ts:13`) instead of copying it; use `Object.defineProperty` or a null-prototype object. A getter is read twice (`src/serialize.ts:30`). The rule doc should also say to assert on the final string that is written or sent.
-14. **A 3xx error does not say where it points.** `src/vendor-http.ts:30-39`: with `redirect: 'manual'`, a moved vendor URL breaks every run with only `returned 301`. Add the redacted, origin-only `Location` to the error.
-15. **Handlers pile up across `runMain` calls.** `src/run-main.ts:45-46` registers `uncaughtException` and `unhandledRejection` on every call and never removes them, so later calls keep stale redactors. Register once, or remove them when the command finishes.
-
-**Why:** None of these leaks a key in the current `runMain` flow, but (1) and (5) break promises the rule doc makes: hand-built secrets are safe, and a run never hangs. The rest are wrong log data or test gaps.
-
-**Context:** Found by the pass-2 review of PR #2. The owner chose to keep PR #2 from growing. Also noted there, with no decision yet: base64 wrapped across lines, keys stored as UTF-16 bytes, `Headers` or `URLSearchParams` objects passed to `assertNoSecrets`, and a size cap on vendor bodies (skipped in PR #2's review).
+**Context:** Supersedes most of "Logger follow-ups after hardening" and "Encodings and checks the redactor still misses" below; close those items that no longer apply when this lands.
 
 **Effort:** M
-**Priority:** P1 for (5), (1), (8), (9) and (10); P2 for the rest
-**Depends on:** PR #2 merged
+**Priority:** P1
+**Depends on:** `chore/logger-hardening` merged
+
+### Logger follow-ups after hardening
+
+**What:** Left open by the `chore/logger-hardening` review (the owner fixed only the leak regressions there):
+1. An own `toJSON` on an Error replaces the whole serialized Error (`src/serialize.ts`, Error branch); drop function-valued children.
+2. `stack` and `cause` getters are read twice in the Error branch.
+3. The 3xx hint lowercases the host, so a key in a `Location` host escapes redaction; redact the raw `Location` first and omit the hint if it held a key (`src/vendor-http.ts` `redirectHint`).
+4. Log lines put `level` and `msg` last since the override fix; put them first and rename colliding fields.
+5. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw.
+6. Tests: the logger fallback with a thrown `Object.create(null)`, and a second `runMain` call.
+7. Doc drift: `describe()` sits between `createLogger`'s JSDoc and the function; `docs/rules/secrets.md` "How it is tested" omits the floating and stall cases and the new vendor-http tests; the `runMain` docstring and this file's Completed note should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
+8. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
+
+**Why:** None leaks a key in the current flow; most go away with the typed logger above.
+
+**Effort:** S
+**Priority:** P2 (item 8 is P1 at deploy time)
+**Depends on:** None
+
+### Encodings and checks the redactor still misses
+
+**What:** The two points the `chore/logger-hardening` PR left open.
+
+1. **Hex and double encodings are not recognized.** `util.inspect` prints Buffers as `<Buffer 6b 65 ...>` inside error messages. Hex, double URL-encoding and base64 of the URL-encoded key were all missed. Decide which encodings count as the key.
+2. **`assertNoSecrets` can check something other than what is written.** It misses `toString` with private fields used through `${obj}`, symbol and non-enumerable properties, `SharedArrayBuffer`, and Errors from another realm (use `Error.isError`). The rule doc should say to assert on the final string that is written or sent.
+
+**Why:** Neither leaks a key in today's flow (keys are `A-Z a-z 0-9 . _ -`, and nothing writes to a database or an LLM yet), but both matter once those writers exist.
+
+**Context:** Found in the PR #2 review; the owner deferred them. Also noted there, with no decision yet: base64 wrapped across lines, keys stored as UTF-16 bytes, `Headers` or `URLSearchParams` objects passed to `assertNoSecrets`, and a size cap on vendor bodies.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
 
 ## Docs
 
@@ -224,3 +222,7 @@ Found by the pass-3 review:
 **Depends on:** Detail page
 
 ## Completed
+
+### Logger and redactor hardening
+
+**Completed:** `chore/logger-hardening` (2026-11-12). `createRedactor` applies the same character rule as `readSecret`; a failing run exits after 2 seconds even if stderr never drains (not on Linux, where a full pipe blocks first); `safeStringify` caps depth at 100 and nodes at 10,000, writes shared objects in full within that budget, unboxes boxed primitives, writes an Error message made of bytes as text and keeps an own `__proto__` as data; `assertNoSecrets` throws instead of passing a value past those limits; a field cannot replace `level` or `msg`, and the logger fallback never throws; `getJson` messages carry the URL redacted, and a 3xx names the origin it points to; the `uncaughtException` and `unhandledRejection` handlers are installed once; tests cover a floating rejection, a full stderr, a body that is not JSON (cause included) and base64 offset 1.

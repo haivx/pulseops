@@ -64,7 +64,7 @@ test('redactor finds HTTP Basic credentials glued to a path or other text', () =
   const key = fakeKey('bs');
   const redact = createRedactor([{ name: 'BETTERSTACK_API_TOKEN', value: key }]);
   const basic = Buffer.from(`user:${key}`).toString('base64');
-  for (const text of [`GET /proxy/${basic}`, `ab${basic}`, `xyz${basic}`]) {
+  for (const text of [`GET /proxy/${basic}`, `a${basic}`, `ab${basic}`, `xyz${basic}`]) {
     assert.ok(redact(text).includes('[REDACTED:BETTERSTACK_API_TOKEN]'), 'a glued Basic credential was missed');
   }
 });
@@ -118,24 +118,38 @@ test('assertNoSecrets blocks a key in any Error property, an AggregateError, or 
   }
 });
 
-test('redactor removes every escaped form of a hand-built secret with + / = . ~ -', () => {
-  // readSecret rejects these characters; a Secret built by hand still reaches createRedactor.
-  const key = `${randomBytes(18).toString('base64')}.~-+/=`;
-  const lowerPercent = (text: string) => text.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase());
-  const jsonSlash = key.replaceAll('/', '\\/');
-  const searchParam = new URLSearchParams({ k: key }).toString().slice('k='.length);
-  const forms = [
-    key,
-    encodeURIComponent(key),
-    lowerPercent(encodeURIComponent(key)),
-    jsonSlash,
-    JSON.stringify(jsonSlash).slice(1, -1),
-    searchParam,
-    lowerPercent(searchParam),
-  ];
-  const out = createRedactor([{ name: 'K', value: key }])(forms.join(' | '));
-  for (const form of forms) assert.ok(!out.includes(form), 'an escaped form of the key survived');
-  assert.equal(out.split('[REDACTED:K]').length - 1, forms.length);
+test('createRedactor refuses a hand-built secret with characters an encoder would escape', () => {
+  // readSecret already refuses these; a Secret built by hand must not bypass the rule.
+  for (const char of ['+', '/', '=', '~', '"', '\\']) {
+    assert.throws(() => createRedactor([{ name: 'K', value: `${fakeKey()}${char}` }]), { code: 'E_CONFIG_INVALID' }, char);
+  }
+});
+
+test('an Error with an own __proto__ property is checked by content, not by its prototype', () => {
+  const key = fakeKey();
+  const error = new Error('request failed');
+  Object.defineProperty(error, '__proto__', { value: { token: key }, enumerable: true });
+  assert.throws(() => assertNoSecrets({ last_error: error }, [{ name: 'GITHUB_TOKEN', value: key }], 'note_runs row'), SecretError);
+});
+
+test('assertNoSecrets fails closed on a value too deep or too large to check in full', () => {
+  const key = fakeKey();
+  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
+  let deep: unknown = { token: key };
+  for (let i = 0; i < 120; i++) deep = { d: deep };
+  assert.throws(() => assertNoSecrets(deep, secrets, 'note_runs row'));
+  let wide: Record<string, unknown> = { leaf: true };
+  for (let i = 0; i < 40; i++) wide = { a: wide, b: wide };
+  assert.throws(() => assertNoSecrets(wide, secrets, 'note_runs row'));
+});
+
+test('assertNoSecrets blocks a key in a boxed String or in an Error message made of bytes', () => {
+  const key = fakeKey();
+  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
+  assert.throws(() => assertNoSecrets({ t: new String(key) }, secrets, 'note_runs row'), SecretError);
+  const error = new Error('x');
+  Object.defineProperty(error, 'message', { value: Buffer.from(key) });
+  assert.throws(() => assertNoSecrets({ last_error: error }, secrets, 'note_runs row'), SecretError);
 });
 
 test('assertNoSecrets blocks an LLM prompt that carries a key', () => {
