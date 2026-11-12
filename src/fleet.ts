@@ -85,7 +85,7 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
           }
           if (!nonEmptyString(check.name)) problem(`${cat}.name`, 'is missing', 'name the worker, job or service');
           if (!nonEmptyString(check.slug)) {
-            problem(`${cat}.slug`, 'is missing', "copy the check's slug from healthchecks.io");
+            problem(`${cat}.slug`, check.slug === undefined ? 'is missing' : 'must be text', "copy the check's slug from healthchecks.io");
           } else if (slugs.has(check.slug)) {
             problem(`${cat}.slug`, `repeats slug ${check.slug} from ${slugs.get(check.slug)}`, 'give each check its own slug');
           } else {
@@ -108,8 +108,9 @@ export function loadFleet(path: string): Fleet {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
-  } catch {
-    throw new FleetError(`pulseops E_CONFIG_INVALID: cannot read ${path}; fix: create it from fleet.example.yaml or pass --fleet <path>`);
+  } catch (error) {
+    const reason = (error as NodeJS.ErrnoException).code ?? 'unreadable';
+    throw new FleetError(`pulseops E_CONFIG_INVALID: cannot read ${path} (${reason}); fix: create it from fleet.example.yaml or pass --fleet <path>`);
   }
   return parseFleet(text, path);
 }

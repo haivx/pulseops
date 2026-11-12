@@ -65,3 +65,8 @@ test('fleet.example.yaml, the file new owners copy, is itself a valid fleet', ()
 test('the same app name twice is refused', () => {
   assert.throws(() => parseFleet('timezone: UTC\napps:\n  - name: a\n  - name: a\n'), (error: unknown) => error instanceof FleetError && error.message.includes('apps[1].name') && error.message.includes('repeats'));
 });
+
+test('a fleet file that cannot be read says why, and a non-text slug says so', () => {
+  assert.throws(() => loadFleet('/nonexistent/pulseops/fleet.yaml'), (error: unknown) => error instanceof FleetError && error.message.includes('(ENOENT)'));
+  assert.throws(() => parseFleet('timezone: UTC\napps:\n  - name: a\n    checks:\n      - { name: w, slug: 123 }\n'), (error: unknown) => error instanceof FleetError && error.message.includes('slug must be text'));
+});
