@@ -70,3 +70,12 @@ test('a failure while stderr is full still exits 1 within 5 seconds', { skip: pr
   child.stderr?.destroy();
   assert.equal(code, 1, 'the process must exit 1, not hang on a full stderr');
 });
+
+test('a thrown value that breaks instanceof still logs one line and exits 1, never a raw Node crash', async () => {
+  const key = fakeKey('hch');
+  const { code, output } = await run({ HEALTHCHECKS_API_KEY: key, FAIL_MODE: 'hostile' }, uncaughtFixture);
+  assert.equal(code, 1);
+  assert.ok(output.includes('"msg":"unexpected failure"') && output.includes('"error_class":"unformattable"'), output);
+  assert.ok(!output.includes('proxy that has been revoked'), 'Node printed its own crash report');
+  for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached stdout or stderr');
+});

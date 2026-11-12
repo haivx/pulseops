@@ -56,7 +56,7 @@ test('a body that is not the expected shape fails as E_VENDOR_BAD_JSON instead o
   try {
     await assert.rejects(
       readChecks(key, createRedactor([{ name: 'HEALTHCHECKS_API_KEY', value: key }]), server.url),
-      (error: unknown) => error instanceof VendorHttpError && error.code === 'E_VENDOR_BAD_JSON',
+      (error: unknown) => error instanceof VendorHttpError && error.code === 'E_VENDOR_BAD_JSON' && error.url === `${server.url}/api/v3/checks/`,
     );
   } finally {
     await server.close();

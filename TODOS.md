@@ -121,15 +121,14 @@
 ### Logger follow-ups after hardening
 
 **What:** Left open by the `chore/logger-hardening` review and not covered by the typed logger:
-1. The 3xx hint lowercases the host, so a key in a `Location` host escapes redaction; redact the raw `Location` first and omit the hint if it held a key (`src/vendor-http.ts` `redirectHint`).
-2. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw, with a test.
-3. Doc drift: the `runMain` docstring should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
-4. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
+1. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw, with a test.
+2. Doc drift: the `runMain` docstring should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
+3. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
 
 **Why:** None leaks a key in the current flow.
 
 **Effort:** S
-**Priority:** P2 (item 4 is P1 at deploy time)
+**Priority:** P2 (item 3 is P1 at deploy time)
 **Depends on:** None
 
 ### Encodings the redactor still misses

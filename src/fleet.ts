@@ -37,7 +37,8 @@ function validTimezone(value: string): boolean {
 export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
   const doc = parseDocument(text);
   if (doc.errors.length > 0) {
-    const where = doc.errors.map((error) => `line ${error.linePos?.[0].line ?? '?'}: ${error.message.split('\n')[0]}`);
+    // The parser's own message can quote the file, so only its line and code are kept.
+    const where = doc.errors.map((error) => `line ${error.linePos?.[0].line ?? '?'} (${error.code})`);
     throw new FleetError(`pulseops E_CONFIG_INVALID: ${source} is not valid YAML (${where.join('; ')}); fix: correct the YAML at that line`);
   }
   const root: unknown = doc.toJS();

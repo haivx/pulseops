@@ -47,7 +47,8 @@ export async function readChecks(key: string, redact: (text: string) => string, 
   const body = await getJson(url, { 'X-Api-Key': key }, redact);
   const checks = typeof body === 'object' && body !== null ? (body as { checks?: unknown }).checks : undefined;
   if (!Array.isArray(checks)) {
-    throw new VendorHttpError('E_VENDOR_BAD_JSON', `pulseops E_VENDOR_BAD_JSON: GET ${url} returned JSON without a checks list`);
+    const shown = redact(url);
+    throw new VendorHttpError('E_VENDOR_BAD_JSON', `pulseops E_VENDOR_BAD_JSON: GET ${shown} returned JSON without a checks list`, { url: shown });
   }
   const statuses = new Map<string, string>();
   for (const check of checks) {

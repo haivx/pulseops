@@ -3,6 +3,7 @@
 //   timer:  an error thrown from a callback after the command returned
 //   reject: the command itself rejects
 //   floating: a promise the command never awaits rejects
+//   hostile: the command rejects with a revoked Proxy, which breaks instanceof
 //   stall: stderr is already full when it fails (the parent never reads it)
 import { runMain } from '../../src/run-main.ts';
 
@@ -13,6 +14,11 @@ await runMain(['HEALTHCHECKS_API_KEY'], async ({ secrets }) => {
   if (process.env.FAIL_MODE === 'floating') {
     void Promise.reject(new Error(`floating failure for ${key}`));
     return;
+  }
+  if (process.env.FAIL_MODE === 'hostile') {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    throw proxy;
   }
   if (process.env.FAIL_MODE === 'stall') process.stderr.write('x'.repeat(4 * 1024 * 1024));
   setTimeout(() => {

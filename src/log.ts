@@ -7,21 +7,27 @@ export type Logger = {
   error: (msg: string, fields?: Record<string, Field>) => void;
 };
 
-const RESERVED = new Set(['level', 'msg']);
+/** What a value that is not a Field becomes: its type, never its content. */
+const dropped = (value: unknown) => `[dropped: ${value === null ? 'null' : typeof value}]`;
 
 /**
  * One JSON line per call: `level`, `msg`, then the fields. Fields are
  * primitives only, so nothing has to guess how to turn an object into text;
  * an error becomes fields through `formatError`. A non-primitive value that
- * gets past the type (from JS or a cast) is written as "[dropped: object]".
+ * gets past the type (from JS or a cast) is written as "[dropped: <type>]".
  * The whole line then passes through `redact`, the second layer.
  */
 export function createLogger(redact: (text: string) => string, sink: (line: string) => void): Logger {
   const write = (level: string, msg: string, fields: Record<string, Field> = {}) => {
-    const entry: Record<string, Field> = { level, msg };
+    // No prototype, so an own `__proto__` field is kept as data.
+    const entry = Object.create(null) as Record<string, Field>;
+    entry.level = level;
+    entry.msg = typeof msg === 'string' ? msg : dropped(msg);
     for (const [key, value] of Object.entries(fields)) {
-      const safe = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : '[dropped: object]';
-      entry[RESERVED.has(key) ? `field_${key}` : key] = safe;
+      // A reserved or taken name is prefixed until free, so no field is ever overwritten.
+      let name = key;
+      while (name in entry) name = `field_${name}`;
+      entry[name] = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : dropped(value);
     }
     sink(redact(JSON.stringify(entry)));
   };

@@ -49,3 +49,29 @@ test('a thrown value that is not an Error gives only its type', () => {
   assert.deepEqual(formatError(null), { error_class: 'null' });
   assert.deepEqual(formatError(undefined), { error_class: 'undefined' });
 });
+
+test('formatError never throws, even on a revoked Proxy', () => {
+  const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke();
+  assert.deepEqual(formatError(proxy), { error_class: 'unformattable' });
+});
+
+test('an anonymous Error subclass is named Error, not an empty string', () => {
+  assert.equal(formatError(new (class extends Error {})('m')).error_class, 'Error');
+});
+
+test('an unreachable vendor names the cause class and a code from a fixed list, never the cause text', () => {
+  const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9 (library text)'), { code: 'ECONNREFUSED' });
+  const error = new VendorHttpError('E_VENDOR_UNREACHABLE', 'pulseops E_VENDOR_UNREACHABLE: GET https://x failed before a response', {
+    url: 'https://x',
+    cause: new TypeError('fetch failed', { cause: refused }),
+  });
+  const fields = formatError(error);
+  assert.equal(fields.error_cause_class, 'TypeError');
+  assert.equal(fields.error_cause_code, 'ECONNREFUSED');
+  assert.ok(!JSON.stringify(fields).includes('library text'));
+  const odd = new VendorHttpError('E_VENDOR_UNREACHABLE', 'm', { cause: Object.assign(new Error('x'), { code: 'SOMETHING_SECRETISH_abc123' }) });
+  assert.equal(formatError(odd).error_cause_code, undefined, 'a code outside the list was written');
+  const timeout = new VendorHttpError('E_VENDOR_UNREACHABLE', 'm', { cause: new DOMException('The operation was aborted due to timeout', 'TimeoutError') });
+  assert.equal(formatError(timeout).error_cause_code, 'TimeoutError');
+});

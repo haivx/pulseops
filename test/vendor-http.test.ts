@@ -208,3 +208,24 @@ test('a 3xx error names the origin it points to, never its path or query', async
     await new Promise<void>((resolve) => redirecting.close(() => resolve()));
   }
 });
+
+test('a 3xx whose Location host holds a key gives no hint, so no lowercased key can escape redaction', async () => {
+  const key = fakeKey('HC');
+  const redact = createRedactor([{ name: 'HEALTHCHECKS_API_KEY', value: key }]);
+  const redirecting = createServer((_req, res) => {
+    res.writeHead(302, { location: `https://${key}.example.com/` });
+    res.end();
+  });
+  await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve));
+  const address = redirecting.address();
+  if (address === null || typeof address === 'string') throw new Error('server has no port');
+  try {
+    await assert.rejects(getJson(`http://127.0.0.1:${address.port}/x`, {}, redact), (error: unknown) =>
+      error instanceof VendorHttpError &&
+      !error.message.includes('redirects to') &&
+      !error.message.toLowerCase().includes(key.toLowerCase()),
+    );
+  } finally {
+    await new Promise<void>((resolve) => redirecting.close(() => resolve()));
+  }
+});

@@ -70,3 +70,23 @@ test('the type refuses an object or Error as a field', () => {
   // @ts-expect-error: fields are string | number | boolean only.
   log.info('x', { nested: { a: 1 } });
 });
+
+test('a message that is not a string is dropped, never serialized', () => {
+  const lines: string[] = [];
+  createLogger(createRedactor([]), (line) => lines.push(line)).error({ token: 'x' } as unknown as string);
+  assert.equal(lines[0], '{"level":"error","msg":"[dropped: object]"}');
+});
+
+test('a renamed reserved field never overwrites another field, an own __proto__ is kept, and drops name their type', () => {
+  const lines: string[] = [];
+  const fields = JSON.parse('{"level":"x","field_level":"y","__proto__":"p"}') as Record<string, string>;
+  Object.assign(fields, { gone: undefined, big: 10n });
+  createLogger(createRedactor([]), (line) => lines.push(line)).info('m', fields);
+  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
+  assert.equal(entry.level, 'info');
+  // Both values survive under field_* names; neither overwrites the other.
+  assert.deepEqual([entry.field_level, entry.field_field_level].sort(), ['x', 'y']);
+  assert.equal(Object.getOwnPropertyDescriptor(entry, '__proto__')?.value, 'p');
+  assert.equal(entry.gone, '[dropped: undefined]');
+  assert.equal(entry.big, '[dropped: bigint]');
+});

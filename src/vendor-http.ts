@@ -21,9 +21,11 @@ const TIMEOUT_MS = 10_000;
 function redirectHint(response: Response, url: string, redact: (text: string) => string): string {
   if (response.status < 300 || response.status > 399) return '';
   const location = response.headers.get('location');
-  if (location === null) return '';
+  // Parsing lowercases the host, which would hide a key from redaction, so a
+  // Location that holds a key gives no hint at all.
+  if (location === null || redact(location) !== location) return '';
   try {
-    return ` (redirects to ${redact(new URL(location, url).origin)})`;
+    return ` (redirects to ${new URL(location, url).origin})`;
   } catch {
     return '';
   }
