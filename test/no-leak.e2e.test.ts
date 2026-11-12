@@ -5,14 +5,32 @@ import { fileURLToPath } from 'node:url';
 import { fakeKey, leakForms, startLeakyServer } from './helpers/leaky-server.ts';
 
 const fixture = fileURLToPath(new URL('./fixtures/fails-with-key.ts', import.meta.url));
+const uncaughtFixture = fileURLToPath(new URL('./fixtures/uncaught-with-key.ts', import.meta.url));
 
-function run(env: Record<string, string>): Promise<{ code: number | null; output: string }> {
+/** A process that has not exited by then is hung; it is killed and reports code null. */
+const HANG_LIMIT_MS = 5000;
+
+function run(env: Record<string, string>, script = fixture): Promise<{ code: number | null; output: string }> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [fixture], { env: { PATH: process.env.PATH ?? '', ...env } });
+    const child = spawn(process.execPath, [script], { env: { PATH: process.env.PATH ?? '', ...env } });
+    const timer = setTimeout(() => child.kill('SIGKILL'), HANG_LIMIT_MS);
     let output = '';
     child.stdout.on('data', (chunk) => (output += chunk));
     child.stderr.on('data', (chunk) => (output += chunk));
-    child.on('close', (code) => resolve({ code, output }));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, output });
+    });
+  });
+}
+
+for (const mode of ['timer', 'reject']) {
+  test(`a ${mode} failure with an open handle exits 1 promptly and prints no form of the key`, async () => {
+    const key = fakeKey('hcu');
+    const { code, output } = await run({ HEALTHCHECKS_API_KEY: key, FAIL_MODE: mode }, uncaughtFixture);
+    assert.equal(code, 1, 'the process must exit 1, not hang');
+    assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'));
+    for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached stdout or stderr');
   });
 }
 

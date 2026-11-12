@@ -13,7 +13,7 @@ test('a real 401 from a vendor that echoes the key never reaches the log', async
   const server = await startLeakyServer();
   try {
     await assert.rejects(
-      getJson(`${server.url}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }),
+      getJson(`${server.url}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }, createRedactor(secrets)),
       (error: unknown) => {
         log.error('healthchecks.io read failed', { source: 'healthchecks.io', error });
         return true;
@@ -39,6 +39,29 @@ test('logger redacts the message, nested fields, and an error cause and stack', 
   assert.ok(!output.includes(key));
   assert.ok(output.includes('outer'));
   assert.ok(output.includes('rejected'));
+});
+
+test('logger redacts a key held in a Buffer or Uint8Array field', () => {
+  const key = fakeKey('gh');
+  const lines: string[] = [];
+  const log = createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line));
+  log.error('request failed', { body: Buffer.from(`token=${key}`), raw: new TextEncoder().encode(key) });
+  const output = lines.join('\n');
+  assert.ok(!output.includes(key));
+  assert.ok(!output.includes([...Buffer.from(key)].join(',')), 'the key leaked as a byte array');
+  assert.equal(output.split('[REDACTED:GITHUB_TOKEN]').length - 1, 2);
+});
+
+test('logger keeps the original error when its cause is circular, and never throws', () => {
+  const lines: string[] = [];
+  const log = createLogger(createRedactor([]), (line) => lines.push(line));
+  const cause: Record<string, unknown> = { step: 'fetch' };
+  cause.self = cause;
+  assert.doesNotThrow(() => log.error('failed', { error: new Error('vendor failed', { cause }), count: 10n }));
+  assert.equal(lines.length, 1);
+  const entry = JSON.parse(lines[0]!) as { error: { message: string }; count: string };
+  assert.equal(entry.error.message, 'vendor failed');
+  assert.equal(entry.count, '10');
 });
 
 test('logger writes one JSON line per call with level and message', () => {

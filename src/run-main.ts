@@ -5,15 +5,20 @@ import { createRedactor, readSecret, SecretError, type Secret } from './secrets.
 const EXIT_FAILURE = 1;
 const EXIT_USAGE = 2;
 
+export type CommandContext = { secrets: Secret[]; log: Logger; redact: (text: string) => string };
+
 /**
  * Entry point for every PulseOps command. Reads the named keys from the
- * environment, and makes sure nothing the command prints or throws, including
- * an uncaught error, leaves the process without going through redaction.
+ * environment. Everything written through the `log` it passes in, and every
+ * error the command throws or leaves uncaught, goes through redaction. Direct
+ * `console` or `process.stdout` writes do not, so commands must not use them.
+ *
+ * An unexpected failure (thrown, rejected or uncaught) ends the process with
+ * exit code 1 once the log line is written, even if a socket or timer is still
+ * open, so a scheduled run never hangs. A missing or invalid key sets exit
+ * code 2 before the command runs.
  */
-export async function runMain(
-  secretNames: string[],
-  command: (context: { secrets: Secret[]; log: Logger }) => Promise<void>,
-): Promise<void> {
+export async function runMain(secretNames: string[], command: (context: CommandContext) => Promise<void>): Promise<void> {
   const secrets: Secret[] = [];
   const configErrors: SecretError[] = [];
   for (const name of secretNames) {
@@ -25,13 +30,20 @@ export async function runMain(
     }
   }
 
-  const log = createLogger(createRedactor(secrets), (line) => process.stderr.write(`${line}\n`));
-  const fail = (error: unknown, code: number) => {
+  const redact = createRedactor(secrets);
+  const log = createLogger(redact, (line) => process.stderr.write(`${line}\n`));
+  let failing = false;
+  const fail = (error: unknown) => {
+    // A second failure while exiting (such as a broken stderr pipe) must not loop.
+    if (failing) return;
+    failing = true;
+    process.exitCode = EXIT_FAILURE;
     log.error('unexpected failure', { error });
-    process.exitCode = code;
+    // Exit after stderr has taken the line; the callback runs once it is flushed.
+    process.stderr.write('', () => process.exit(EXIT_FAILURE));
   };
-  process.on('uncaughtException', (error) => fail(error, EXIT_FAILURE));
-  process.on('unhandledRejection', (error) => fail(error, EXIT_FAILURE));
+  process.on('uncaughtException', fail);
+  process.on('unhandledRejection', fail);
 
   if (configErrors.length > 0) {
     for (const error of configErrors) log.error(error.message, { code: error.code });
@@ -40,8 +52,8 @@ export async function runMain(
   }
 
   try {
-    await command({ secrets, log });
+    await command({ secrets, log, redact });
   } catch (error) {
-    fail(error, EXIT_FAILURE);
+    fail(error);
   }
 }
