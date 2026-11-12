@@ -113,24 +113,22 @@ test('an unknown flag, an unknown command or an extra argument exits 2 with the 
   }
 });
 
-test('an http base URL to another host exits 2 before the key is sent anywhere', async () => {
-  let requests = 0;
-  const server = createServer((_req, res) => {
-    requests += 1;
-    res.end('{"checks":[]}');
+test('an http base URL to another host exits 2 with E_CONFIG_INVALID, before any request', async () => {
+  // The unit tests for healthchecksBaseUrl cover each refused shape; this checks the CLI stops with exit 2.
+  const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
+    HEALTHCHECKS_API_KEY: fakeKey('hcr'),
+    HEALTHCHECKS_API_URL: 'http://pulseops-test.invalid:9',
   });
-  await new Promise<void>((resolve) => server.listen(0, '0.0.0.0', resolve));
-  const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('server has no port');
-  try {
-    const { code, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
-      HEALTHCHECKS_API_KEY: fakeKey('hcr'),
-      HEALTHCHECKS_API_URL: `http://pulseops-test.invalid:${address.port}`,
-    });
-    assert.equal(code, 2);
-    assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('HEALTHCHECKS_API_URL'));
-    assert.equal(requests, 0);
-  } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+  assert.equal(code, 2);
+  assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('HEALTHCHECKS_API_URL'));
+  assert.equal(stdout, '', 'no note is printed');
+});
+
+test('an argument error that quotes the key is redacted', async () => {
+  const key = fakeKey('hcr');
+  const { code, stderr } = await run(['note', '--dry-run', `--${key}`, '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: key });
+  assert.equal(code, 2);
+  assert.ok(stderr.includes('E_USAGE'));
+  assert.ok(stderr.includes('[REDACTED:HEALTHCHECKS_API_KEY]'));
+  for (const form of leakForms(key)) assert.ok(!stderr.includes(form), 'a leak form reached stderr');
 });

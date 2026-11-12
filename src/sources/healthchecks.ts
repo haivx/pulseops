@@ -1,4 +1,5 @@
 import { ConfigError } from '../config-error.ts';
+import type { Logger } from '../log.ts';
 import { getJson, VendorHttpError } from '../vendor-http.ts';
 
 export const HEALTHCHECKS_DEFAULT_URL = 'https://healthchecks.io';
@@ -16,7 +17,7 @@ export function healthchecksBaseUrl(override: string | undefined): string {
   if (override === undefined || override === '') return HEALTHCHECKS_DEFAULT_URL;
   const refuse = () =>
     new ConfigError(
-      'pulseops E_CONFIG_INVALID: HEALTHCHECKS_API_URL must be an https URL, or http to localhost, with no user or password; fix: correct it or unset it to use https://healthchecks.io',
+      'pulseops E_CONFIG_INVALID: HEALTHCHECKS_API_URL must be an https URL, or http to localhost, with no user, password, query or fragment; fix: correct it or unset it to use https://healthchecks.io',
     );
   let url: URL;
   try {
@@ -25,8 +26,11 @@ export function healthchecksBaseUrl(override: string | undefined): string {
     throw refuse();
   }
   const secure = url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
-  if (!secure || url.username !== '' || url.password !== '') throw refuse();
-  return override.replace(/\/+$/, '');
+  // A query, fragment or stray whitespace would send the request to a wrong
+  // path, which reads as a daily outage instead of a config error.
+  const clean = override.trim() === override && url.search === '' && url.hash === '';
+  if (!secure || !clean || url.username !== '' || url.password !== '') throw refuse();
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
 /**
@@ -53,4 +57,19 @@ export async function readChecks(key: string, redact: (text: string) => string, 
     statuses.set(slug, statuses.has(slug) ? 'ambiguous' : known);
   }
   return statuses;
+}
+
+/**
+ * Runs a checks read for the note. A vendor failure is logged and becomes
+ * `unavailable`, one problem in a note that still prints. Any other error is a
+ * bug and is rethrown, so the run exits 1 instead of reading as an outage.
+ */
+export async function checksOrUnavailable(read: () => Promise<Map<string, string>>, log: Logger): Promise<Map<string, string> | 'unavailable'> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!(error instanceof VendorHttpError)) throw error;
+    log.error('healthchecks.io read failed', { source: 'healthchecks.io', error });
+    return 'unavailable';
+  }
 }

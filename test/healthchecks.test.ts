@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
 import { createRedactor } from '../src/secrets.ts';
 import { createLogger } from '../src/log.ts';
-import { readChecks, healthchecksBaseUrl } from '../src/sources/healthchecks.ts';
+import { readChecks, healthchecksBaseUrl, checksOrUnavailable } from '../src/sources/healthchecks.ts';
 import { ConfigError } from '../src/config-error.ts';
 import { VendorHttpError } from '../src/vendor-http.ts';
 import { fakeKey, leakForms } from './helpers/leaky-server.ts';
@@ -115,7 +115,24 @@ test('the API base URL must be https, or http only to this machine', () => {
   assert.equal(healthchecksBaseUrl(undefined), 'https://healthchecks.io');
   assert.equal(healthchecksBaseUrl('https://hc.example.com/'), 'https://hc.example.com');
   for (const local of ['http://127.0.0.1:8080', 'http://localhost:9', 'http://[::1]:7']) assert.equal(healthchecksBaseUrl(local), local);
-  for (const bad of ['http://hc.example.com', 'ftp://127.0.0.1', 'not a url', 'https://user:pw@hc.example.com']) {
+  assert.equal(healthchecksBaseUrl('https://hc.example.com/sub/'), 'https://hc.example.com/sub');
+  for (const bad of ['http://hc.example.com', 'ftp://127.0.0.1', 'not a url', 'https://user:pw@hc.example.com', 'https://hc.example.com/?x=1', 'https://hc.example.com/#f', 'https://hc.example.com/ ', ' https://hc.example.com']) {
     assert.throws(() => healthchecksBaseUrl(bad), (error: unknown) => error instanceof ConfigError && error.code === 'E_CONFIG_INVALID', bad);
   }
+});
+
+test('only a vendor failure reads as unavailable; any other error is a bug and is rethrown', async () => {
+  const logged: string[] = [];
+  const log = createLogger(createRedactor([]), (line) => logged.push(line));
+  const vendorDown = await checksOrUnavailable(async () => {
+    throw new VendorHttpError('E_VENDOR_UNREACHABLE', 'pulseops E_VENDOR_UNREACHABLE: GET x failed before a response');
+  }, log);
+  assert.equal(vendorDown, 'unavailable');
+  assert.ok(logged.join('\n').includes('E_VENDOR_UNREACHABLE'));
+  await assert.rejects(
+    checksOrUnavailable(async () => {
+      throw new TypeError('a bug in the parser');
+    }, log),
+    TypeError,
+  );
 });

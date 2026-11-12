@@ -7,8 +7,7 @@ import { runMain, EXIT_USAGE } from './run-main.ts';
 import { assertNoSecrets } from './secrets.ts';
 import { classify } from './note/classify.ts';
 import { renderNote } from './note/render.ts';
-import { readChecks, healthchecksBaseUrl } from './sources/healthchecks.ts';
-import { VendorHttpError } from './vendor-http.ts';
+import { readChecks, healthchecksBaseUrl, checksOrUnavailable } from './sources/healthchecks.ts';
 
 const USAGE = 'usage: pulseops note --dry-run [--fleet <path>]';
 
@@ -41,16 +40,7 @@ await runMain(['HEALTHCHECKS_API_KEY'], async ({ secrets, log, redact }) => {
   }
 
   const key = secrets.find((secret) => secret.name === 'HEALTHCHECKS_API_KEY')!.value;
-  let checks: Map<string, string> | 'unavailable';
-  try {
-    checks = await readChecks(key, redact, baseUrl);
-  } catch (error) {
-    // A vendor failure is one problem in the note, which still prints. Any
-    // other error is a bug and exits 1 instead of reading as an outage.
-    if (!(error instanceof VendorHttpError)) throw error;
-    log.error('healthchecks.io read failed', { source: 'healthchecks.io', error });
-    checks = 'unavailable';
-  }
+  const checks = await checksOrUnavailable(() => readChecks(key, redact, baseUrl), log);
 
   const note = renderNote(classify(fleet, checks), new Date(), fleet.timezone);
   assertNoSecrets(note, secrets, 'note text');

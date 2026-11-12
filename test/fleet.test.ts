@@ -70,3 +70,13 @@ test('a fleet file that cannot be read says why, and a non-text slug says so', (
   assert.throws(() => loadFleet('/nonexistent/pulseops/fleet.yaml'), (error: unknown) => error instanceof FleetError && error.message.includes('(ENOENT)'));
   assert.throws(() => parseFleet('timezone: UTC\napps:\n  - name: a\n    checks:\n      - { name: w, slug: 123 }\n'), (error: unknown) => error instanceof FleetError && error.message.includes('slug must be text'));
 });
+
+test('an empty or null slug is reported as missing, not as "must be text"', () => {
+  for (const slug of ["''", 'null']) {
+    assert.throws(
+      () => parseFleet(`timezone: UTC\napps:\n  - name: a\n    checks:\n      - { name: w, slug: ${slug} }\n`),
+      (error: unknown) => error instanceof FleetError && error.message.includes('slug is missing'),
+      slug,
+    );
+  }
+});
