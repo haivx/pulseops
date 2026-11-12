@@ -1,37 +1,29 @@
-import { safeStringify } from './serialize.ts';
+/** A log field: text, a number or a flag. Objects and Errors are refused by the type. */
+export type Field = string | number | boolean;
 
 export type Logger = {
-  info: (msg: string, fields?: Record<string, unknown>) => void;
-  warn: (msg: string, fields?: Record<string, unknown>) => void;
-  error: (msg: string, fields?: Record<string, unknown>) => void;
+  info: (msg: string, fields?: Record<string, Field>) => void;
+  warn: (msg: string, fields?: Record<string, Field>) => void;
+  error: (msg: string, fields?: Record<string, Field>) => void;
 };
 
-/**
- * One JSON line per call. The whole line passes through `redact` after
- * serialization, so a key anywhere in the message, fields, error, cause, stack
- * or a byte array is caught in one place. Logging never throws: if the fields
- * cannot be serialized, they are all replaced by the reason, so the message
- * still lands.
- */
-/** The reason a field could not be serialized, never throwing itself. */
-function describe(error: unknown): string {
-  try {
-    return error instanceof Error ? String(error.message) : String(error);
-  } catch {
-    return 'unserializable field';
-  }
-}
+const RESERVED = new Set(['level', 'msg']);
 
+/**
+ * One JSON line per call: `level`, `msg`, then the fields. Fields are
+ * primitives only, so nothing has to guess how to turn an object into text;
+ * an error becomes fields through `formatError`. A non-primitive value that
+ * gets past the type (from JS or a cast) is written as "[dropped: object]".
+ * The whole line then passes through `redact`, the second layer.
+ */
 export function createLogger(redact: (text: string) => string, sink: (line: string) => void): Logger {
-  const write = (level: string, msg: string, fields: Record<string, unknown> = {}) => {
-    let line: string;
-    try {
-      // level and msg last, so a field with the same name cannot replace them.
-      line = safeStringify({ ...fields, level, msg });
-    } catch (error) {
-      line = JSON.stringify({ level, msg, serialization_error: describe(error) });
+  const write = (level: string, msg: string, fields: Record<string, Field> = {}) => {
+    const entry: Record<string, Field> = { level, msg };
+    for (const [key, value] of Object.entries(fields)) {
+      const safe = typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : '[dropped: object]';
+      entry[RESERVED.has(key) ? `field_${key}` : key] = safe;
     }
-    sink(redact(line));
+    sink(redact(JSON.stringify(entry)));
   };
   return {
     info: (msg, fields) => write('info', msg, fields),

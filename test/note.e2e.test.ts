@@ -77,7 +77,7 @@ test('when healthchecks.io rejects the key, the note still prints with the sourc
     assert.equal(code, 0, stderr);
     assert.ok(stdout.includes(': 1 problem\n  unknown: healthchecks.io unavailable\n'));
     assert.ok(stderr.includes('E_VENDOR_HTTP'));
-    assert.ok(stderr.includes('[REDACTED:HEALTHCHECKS_API_KEY]'));
+    assert.ok(stderr.includes('"error_status":401'), 'the status is logged; the vendor body that echoed the key is not');
     for (const form of leakForms(key)) assert.ok(!(stdout + stderr).includes(form), 'a leak form reached the output');
   } finally {
     await server.close();

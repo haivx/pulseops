@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRedactor } from '../src/secrets.ts';
 import { createLogger } from '../src/log.ts';
+import { formatError } from '../src/format-error.ts';
 import { getJson, VendorHttpError } from '../src/vendor-http.ts';
 import { fakeKey, leakForms } from './helpers/leaky-server.ts';
 
@@ -24,7 +25,7 @@ function longestPrefix(text: string, key: string): number {
   return 0;
 }
 
-test('a key echoed across the detail cut leaves no prefix of it in the log', async () => {
+test('a vendor body that echoes the key leaves no part of it in the log', async () => {
   const key = fakeKey('hc');
   const secrets = [{ name: 'HEALTHCHECKS_API_KEY', value: key }];
   const redact = createRedactor(secrets);
@@ -34,7 +35,7 @@ test('a key echoed across the detail cut leaves no prefix of it in the log', asy
   const server = await serve(401, `${'x'.repeat(480)}${key}`);
   try {
     await assert.rejects(getJson(`${server.url}/api/v3/checks/`, {}, redact), (error: unknown) => {
-      log.error('read failed', { error });
+      log.error('read failed', formatError(error));
       return error instanceof VendorHttpError && error.code === 'E_VENDOR_HTTP';
     });
   } finally {
@@ -115,7 +116,7 @@ test('an unreachable vendor fails with E_VENDOR_UNREACHABLE and the logged error
   const url = server.url;
   await server.close();
   await assert.rejects(getJson(`${url}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }, redact), (error: unknown) => {
-    log.error('healthchecks.io read failed', { error });
+    log.error('healthchecks.io read failed', formatError(error));
     return error instanceof VendorHttpError && error.code === 'E_VENDOR_UNREACHABLE';
   });
   const output = lines.join('\n');
@@ -145,7 +146,7 @@ test('a 2xx body cut off mid-read fails with E_VENDOR_UNREACHABLE and the logged
     await assert.rejects(
       getJson(`http://127.0.0.1:${address.port}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }, redact),
       (error: unknown) => {
-        log.error('read failed', { error });
+        log.error('read failed', formatError(error));
         return error instanceof VendorHttpError && error.code === 'E_VENDOR_UNREACHABLE' && error.status === 200;
       },
     );
@@ -165,7 +166,7 @@ test('a body that is not JSON leaves nothing of the body in the log, cause inclu
   const server = await serve(200, `${key} is not JSON`);
   try {
     await assert.rejects(getJson(`${server.url}/api/v2/monitors`, {}, redact), (error: unknown) => {
-      log.error('read failed', { error });
+      log.error('read failed', formatError(error));
       return error instanceof VendorHttpError && error.code === 'E_VENDOR_BAD_JSON' && error.cause === undefined;
     });
   } finally {

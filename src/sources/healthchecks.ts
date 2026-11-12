@@ -1,5 +1,6 @@
 import { ConfigError } from '../config-error.ts';
 import type { Logger } from '../log.ts';
+import { formatError } from '../format-error.ts';
 import { getJson, VendorHttpError } from '../vendor-http.ts';
 
 export const HEALTHCHECKS_DEFAULT_URL = 'https://healthchecks.io';
@@ -69,7 +70,7 @@ export async function checksOrUnavailable(read: () => Promise<Map<string, string
     return await read();
   } catch (error) {
     if (!(error instanceof VendorHttpError)) throw error;
-    log.error('healthchecks.io read failed', { source: 'healthchecks.io', error });
+    log.error('healthchecks.io read failed', { source: 'healthchecks.io', ...formatError(error) });
     return 'unavailable';
   }
 }

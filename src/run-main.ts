@@ -1,4 +1,5 @@
 import { createLogger, type Logger } from './log.ts';
+import { formatError } from './format-error.ts';
 import { createRedactor, readSecret, SecretError, type Secret } from './secrets.ts';
 
 /** Exit codes from the plan: 1 unexpected failure, 2 usage or validation error. */
@@ -45,7 +46,7 @@ export async function runMain(secretNames: string[], command: (context: CommandC
     if (failing) return;
     failing = true;
     process.exitCode = EXIT_FAILURE;
-    log.error('unexpected failure', { error });
+    log.error('unexpected failure', formatError(error));
     // Exit after stderr has taken the line; the callback runs once it is flushed.
     process.stderr.write('', () => process.exit(EXIT_FAILURE));
     // If stderr never drains (a reader that stopped reading), exit anyway.

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage } from 'node:http';
 import { createRedactor } from '../src/secrets.ts';
 import { createLogger } from '../src/log.ts';
+import { formatError } from '../src/format-error.ts';
 import { readChecks, healthchecksBaseUrl, checksOrUnavailable } from '../src/sources/healthchecks.ts';
 import { ConfigError } from '../src/config-error.ts';
 import { VendorHttpError } from '../src/vendor-http.ts';
@@ -70,14 +71,15 @@ test('a 401 that echoes the key fails as E_VENDOR_HTTP and, logged, shows no for
   const server = await serve((req) => ({ status: 401, body: JSON.stringify({ error: 'bad key', got: req.headers['x-api-key'] }) }));
   try {
     await assert.rejects(readChecks(key, redact, server.url), (error: unknown) => {
-      log.error('healthchecks.io read failed', { error });
+      log.error('healthchecks.io read failed', formatError(error));
       return error instanceof VendorHttpError && error.code === 'E_VENDOR_HTTP' && error.status === 401;
     });
   } finally {
     await server.close();
   }
   const output = lines.join('\n');
-  assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'));
+  // The vendor body (which echoed the key) is never logged; only class, code, status and URL are.
+  assert.ok(output.includes('"error_code":"E_VENDOR_HTTP"') && output.includes('"error_status":401'));
   for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached the log');
 });
 

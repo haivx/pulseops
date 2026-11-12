@@ -29,7 +29,8 @@ for (const mode of ['timer', 'reject', 'floating']) {
     const key = fakeKey('hcu');
     const { code, output } = await run({ HEALTHCHECKS_API_KEY: key, FAIL_MODE: mode }, uncaughtFixture);
     assert.equal(code, 1, 'the process must exit 1, not hang');
-    assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'));
+    // A plain Error's message is never written, so the key in it cannot be either.
+    assert.ok(output.includes('"msg":"unexpected failure"') && output.includes('"error_class":"Error"'));
     for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached stdout or stderr');
   });
 }
