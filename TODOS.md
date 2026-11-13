@@ -24,7 +24,10 @@
 3. Two assertions in `test/telegram.test.ts` ("sending stops within the time budget") check nothing: the fake clock moves only in sleeps, so deleting the pre-try check still passes, and the watchdog line sums constants. Make the fake request take 10 s on the clock and assert the deadline is never crossed, with an all-503 case that stops at the try check.
 4. Docs: README has no exit `1` (a bug, or `assertNoSecrets` stopping a send; no ping, so the note check alerts). `docs/designs/pulseops-daily-note.md` still says sending is not built (line 329), its exit table gives 2 only as a usage error, and step 2 says "retry on a failure" without saying 4xx is not retried.
 
-**Why:** None sends a duplicate, hides a missing note or leaks a key; item 1 can outlast a `timeout 120` watchdog only after a clock jump.
+5. From the last round: `telegramChatId` (`src/telegram.ts`) accepts `^-?\d{1,20}$`, so a chat id with a leading zero (`0123`, `-0100…`) passes, but Telegram's reply names `123` and `confirms()` never matches: every run ends `unconfirmed` (exit 4, daily alert) while the note arrives. Tighten to `^-?[1-9]\d{0,19}$`.
+6. From the last round: `partial` and `over-budget` drop the unconfirmed count. After an unconfirmed part, a later refusal or timeout reports "k parts went out" with no `parts_unconfirmed` field or "check the chat" hint (a later 401 even blames the token when the API URL is wrong). Still non-zero with no ping, so nothing is lost. Carry `unconfirmed` on both results and print it.
+
+**Why:** None sends a duplicate, hides a missing note or leaks a key; item 1 can outlast a `timeout 120` watchdog only after a clock jump, and item 5 only misfires on a chat id typed with a leading zero.
 
 **Effort:** S
 **Priority:** P2

@@ -349,3 +349,28 @@ test('splitMessage cuts only between visible characters, keeps blank lines, and 
   assert.equal(splitMessage(blanks).join('\n'), blanks);
   assert.throws(() => splitMessage('\u{1F600}', 1), RangeError);
 });
+
+test('a 200 whose body is cut off mid-read counts as sent and is not resent (no duplicate)', async () => {
+  const token = fakeToken();
+  const secret = token.split(':')[1]!;
+  let calls = 0;
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      calls += 1;
+      // Headers promise 100 bytes; the socket closes after 6, so reading the body fails after the 200.
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '100' });
+      res.write('{"ok":', () => res.socket?.destroy());
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') throw new Error('server has no port');
+  try {
+    const result = await sendNote(delivery(token, secret, `http://127.0.0.1:${address.port}`));
+    assert.deepEqual(result, { kind: 'unconfirmed', sent: 1, unconfirmed: 1, total: 1 });
+    assert.equal(calls, 1, 'a 200 with a cut-off body was resent');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
