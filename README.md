@@ -4,4 +4,14 @@ One morning message for the health and costs of a small fleet of production apps
 
 PulseOps sends a daily note covering app health, deploys, LLM spend and subscriptions due in the next 7 days. Alerts for downtime and silent workers come from Better Stack and healthchecks.io, not from PulseOps, so a PulseOps bug cannot suppress an alert.
 
-Status: design approved. Built so far: the API-key guard (see [the secrets rule](docs/rules/secrets.md)) and a first note that reads healthchecks.io only and prints instead of sending. To try it, copy `fleet.example.yaml` to `fleet.yaml`, set `HEALTHCHECKS_API_KEY` and run `npm run pulseops -- note --dry-run`. See [the design](docs/designs/pulseops-daily-note.md) and [TODOS.md](TODOS.md).
+Status: design approved. Built so far: the API-key guard (see [the secrets rule](docs/rules/secrets.md)) and a note that reads healthchecks.io and is sent to Telegram. Better Stack, GitHub deploys and subscriptions are not read yet. See [the design](docs/designs/pulseops-daily-note.md) and [TODOS.md](TODOS.md).
+
+## Run it
+
+1. Copy `fleet.example.yaml` to `fleet.yaml` and list your apps and their healthchecks.io check slugs.
+2. Set these in the environment (never in a file in the repo):
+   - `HEALTHCHECKS_API_KEY`: a read-only key for the healthchecks.io project.
+   - `TELEGRAM_BOT_TOKEN`: the token @BotFather gives your bot.
+   - `TELEGRAM_CHAT_ID`: your chat id. Send the bot one message, then read `chat.id` from `https://api.telegram.org/bot<token>/getUpdates`.
+   - `HEALTHCHECKS_PING_UUID`: the UUID of the healthchecks.io check for the note job itself (the part after `hc-ping.com/`).
+3. `npm run pulseops -- note --dry-run` prints the note; `npm run pulseops -- note` sends it and pings the note job's check.

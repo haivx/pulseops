@@ -16,18 +16,6 @@
 
 ## Note
 
-### Send the note to Telegram
-
-**What:** `pulseops note` (without `--dry-run`) sends the rendered note as a Telegram bot message to the owner's chat.
-
-**Why:** The owner chose Telegram as the delivery channel (open question 1, 2026-11-12). Until this lands the note only prints.
-
-**Context:** Read the bot token and chat id with `readSecret`, call `assertNoSecrets(note, secrets, 'Telegram message')` before sending, and send through a redacting HTTP call (the bot token is part of Telegram's URL, so it must be one of the redactor's secrets). Retry delivery up to 3 times with backoff, as in "Run once per day" step 2, then ping healthchecks.io only after delivery.
-
-**Effort:** S
-**Priority:** P1
-**Depends on:** `pulseops note --dry-run`
-
 ### Subscription price history
 
 **What:** Record each price change for a subscription.
@@ -218,3 +206,7 @@
 ### Logger takes typed fields, not objects
 
 **Completed:** `feat/typed-logger` (2026-11-12). Log fields are `string | number | boolean` only, an error becomes fields only through `formatError` (class, `E_*` code, status, redacted URL; never a library's message or stack, never a vendor body), `assertNoSecrets` takes only the final string, and `src/serialize.ts` is deleted.
+
+### Send the note to Telegram
+
+**Completed:** `feat/telegram-send` (2026-11-13). `pulseops note` sends the note as plain text to the owner's chat, retries up to 3 tries (5xx, unreachable, 429 with its `retry_after` capped at 30 seconds), exits 4 if delivery fails, and pings the note job's healthchecks.io check only after delivery.

@@ -9,7 +9,7 @@ PulseOps holds vendor API keys (healthchecks.io, Better Stack, GitHub, and later
 
 ## What counts as the key
 
-The raw value, its URL-encoded forms (`encodeURIComponent` and `URLSearchParams`, upper or lower case), the form with `/` written as `\/`, the JSON-escaped version of each, its base64 form, and any base64 value that decodes to text containing it, such as an HTTP Basic auth header, even when glued to a path or other text. Keys shorter than 16 characters are rejected, because redacting them could match ordinary text. `createRedactor` applies the same length and character rule to a `Secret` built by hand, so no path skips it.
+The raw value, its URL-encoded forms (`encodeURIComponent` and `URLSearchParams`, upper or lower case), the form with `/` written as `\/`, the JSON-escaped version of each, its base64 form, and any base64 value that decodes to text containing it, such as an HTTP Basic auth header, even when glued to a path or other text. Keys shorter than 16 characters are rejected, because redacting them could match ordinary text. For a compound credential only the secret part is a key: a Telegram bot token is `<bot id>:<secret>`, and only the part after the colon is read as a `Secret` (the bot id is public); a healthchecks.io ping URL is held as its UUID alone, `HEALTHCHECKS_PING_UUID`. `createRedactor` applies the same length and character rule to a `Secret` built by hand, so no path skips it.
 
 ## How it is tested
 
