@@ -163,3 +163,52 @@ test('a chat id that is not a number exits 2 before anything is sent', async () 
     await vendors.close();
   }
 });
+
+test('a Telegram 4xx (bad token, wrong chat, bot blocked) is a config error: exit 2 with a fix, one try, no ping', async () => {
+  const s = secrets();
+  const vendors = await fakeVendors(401);
+  try {
+    const { code, stdout, stderr } = await run(['note', '--fleet', writeFleet()], env(vendors.url, s));
+    assert.equal(code, 2, stderr);
+    assert.equal(vendors.calls.telegram.length, 1);
+    assert.deepEqual(vendors.calls.pings, []);
+    assert.ok(stderr.includes('TELEGRAM_BOT_TOKEN') && stderr.includes('TELEGRAM_CHAT_ID') && stderr.includes('fix:'));
+    assertNoLeak(stdout + stderr, s);
+  } finally {
+    await vendors.close();
+  }
+});
+
+test('a ping UUID that is not a UUID exits 2 before anything is sent', async () => {
+  const s = secrets();
+  const vendors = await fakeVendors(200);
+  try {
+    const { code, stderr } = await run(['note', '--fleet', writeFleet()], { ...env(vendors.url, s), HEALTHCHECKS_PING_UUID: 'app-1-worker-check-slug' });
+    assert.equal(code, 2);
+    assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('HEALTHCHECKS_PING_UUID'));
+    assert.equal(vendors.calls.telegram.length, 0);
+  } finally {
+    await vendors.close();
+  }
+});
+
+test('a ping answered with 404 (an unknown check) exits 2 with a fix, after the note was delivered', async () => {
+  const s = secrets();
+  const vendors = await fakeVendors(200, 404);
+  try {
+    const { code, stdout, stderr } = await run(['note', '--fleet', writeFleet()], env(vendors.url, s));
+    assert.equal(code, 2, stderr);
+    assert.equal(vendors.calls.telegram.length, 1);
+    assert.ok(stderr.includes('HEALTHCHECKS_PING_UUID') && stderr.includes('fix:'));
+    assertNoLeak(stdout + stderr, s);
+  } finally {
+    await vendors.close();
+  }
+});
+
+test('an unknown command says so, without asking for the Telegram settings', async () => {
+  const { code, stderr } = await run(['notes', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: fakeKey('hcr') });
+  assert.equal(code, 2);
+  assert.ok(stderr.includes('unknown command'));
+  assert.ok(!stderr.includes('TELEGRAM_BOT_TOKEN'), 'it asked for Telegram settings first');
+});

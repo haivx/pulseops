@@ -248,3 +248,28 @@ test('a percent-encoded Location host holding a key writes no part of it', async
   assert.equal(error.redirect, 'cross-origin');
   assert.ok(!error.message.toLowerCase().includes(key.toLowerCase().slice(0, 12)), 'part of the key reached the message');
 });
+
+test('a real 429 takes its wait from Retry-After when present, else from the body retry_after', async () => {
+  const cases: { headers: Record<string, string>; body: string; expected: number | undefined }[] = [
+    { headers: {}, body: '{"ok":false,"parameters":{"retry_after":5}}', expected: 5 },
+    { headers: { 'retry-after': '7' }, body: '{"ok":false,"parameters":{"retry_after":5}}', expected: 7 },
+    { headers: { 'retry-after': '' }, body: '{"ok":false,"parameters":{"retry_after":3}}', expected: 3 },
+    { headers: {}, body: 'not json', expected: undefined },
+  ];
+  for (const { headers, body, expected } of cases) {
+    const server = createServer((_req, res) => {
+      res.writeHead(429, { 'content-type': 'application/json', ...headers });
+      res.end(body);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('server has no port');
+    try {
+      await assert.rejects(getJson(`http://127.0.0.1:${address.port}/x`, {}, (t) => t), (error: unknown) =>
+        error instanceof VendorHttpError && error.status === 429 && error.retryAfter === expected,
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+});

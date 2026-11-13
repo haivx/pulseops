@@ -84,8 +84,12 @@ function redirectKind(response: Response, url: string): Redirect | undefined {
 
 /** Seconds to wait from a 429: the Retry-After header, else Telegram's `parameters.retry_after`; a number only. */
 function retryAfterSeconds(response: Response, body: string): number | undefined {
-  const header = Number(response.headers.get('retry-after'));
-  if (Number.isFinite(header) && header >= 0) return header;
+  // Number(null) and Number('') are 0, so an absent or blank header must not be read as "wait 0".
+  const raw = response.headers.get('retry-after')?.trim();
+  if (raw !== undefined && raw !== '') {
+    const header = Number(raw);
+    if (Number.isFinite(header) && header >= 0) return header;
+  }
   try {
     const value = (JSON.parse(body) as { parameters?: { retry_after?: unknown } }).parameters?.retry_after;
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;

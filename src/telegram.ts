@@ -1,7 +1,7 @@
 // Sends the note to the owner's Telegram chat (open question 1, decided
 // 2026-11-12). See docs/rules/secrets.md for how the bot token is a secret.
 import { ConfigError } from './config-error.ts';
-import { checkSecretValue, SecretError, type Secret } from './secrets.ts';
+import { checkSecretValue, readSecret, SecretError, type Secret } from './secrets.ts';
 import { postJson, VendorHttpError } from './vendor-http.ts';
 
 export const TELEGRAM_DEFAULT_URL = 'https://api.telegram.org';
@@ -53,27 +53,59 @@ export function telegramChatId(env: Record<string, string | undefined>): string 
   return value;
 }
 
-/** Splits text into parts Telegram accepts, at line breaks where it can. */
-export function splitMessage(text: string): string[] {
+/**
+ * Splits text into parts of at most `limit` UTF-16 units, at line breaks where
+ * it can. A line longer than the limit is cut, never between the two halves of
+ * a surrogate pair (an emoji), which Telegram would refuse or show broken.
+ */
+export function splitMessage(text: string, limit = MAX_MESSAGE): string[] {
   const parts: string[] = [];
   let current = '';
   for (const line of text.split('\n')) {
     const candidate = current === '' ? line : `${current}\n${line}`;
-    if (candidate.length <= MAX_MESSAGE) {
+    if (candidate.length <= limit) {
       current = candidate;
       continue;
     }
     if (current !== '') parts.push(current);
-    // A single line longer than the limit is cut into pieces.
     let rest = line;
-    while (rest.length > MAX_MESSAGE) {
-      parts.push(rest.slice(0, MAX_MESSAGE));
-      rest = rest.slice(MAX_MESSAGE);
+    while (rest.length > limit) {
+      const high = rest.charCodeAt(limit - 1);
+      const cut = high >= 0xd800 && high <= 0xdbff ? limit - 1 : limit;
+      parts.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
     }
     current = rest;
   }
   if (current !== '' || parts.length === 0) parts.push(current);
   return parts;
+}
+
+/** Room kept in each part for the "\n(i/n)" marker of a note sent in several parts. */
+const MARKER_ROOM = 16;
+
+/** The parts to send: one as is, or several each ending in "(i/n)", every one within Telegram's limit. */
+export function messageParts(text: string): string[] {
+  if (text.length <= MAX_MESSAGE) return [text];
+  const parts = splitMessage(text, MAX_MESSAGE - MARKER_ROOM);
+  return parts.map((part, i) => `${part}\n(${i + 1}/${parts.length})`);
+}
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The note job's healthchecks.io ping UUID, the secret part of its ping URL.
+ * Checked for shape at startup, so a slug or a typo fails before anything is sent.
+ */
+export function readPingUuid(env: Record<string, string | undefined>): Secret {
+  const secret = readSecret(env, 'HEALTHCHECKS_PING_UUID');
+  if (!UUID_SHAPE.test(secret.value)) {
+    throw new SecretError(
+      'E_CONFIG_INVALID',
+      'pulseops E_CONFIG_INVALID: HEALTHCHECKS_PING_UUID must be a UUID; fix: copy the UUID from the note check\'s ping URL in healthchecks.io',
+    );
+  }
+  return secret;
 }
 
 const MAX_TRIES = 3;
@@ -113,11 +145,11 @@ export type NoteDelivery = {
 
 /**
  * Sends the note as plain text (no parse_mode), so nothing in it can become
- * markup. Each part is retried on its own.
+ * markup. A long note goes in several parts marked (i/n); each is retried on its own.
  */
 export async function sendNote(delivery: NoteDelivery): Promise<void> {
   const url = `${delivery.baseUrl}/bot${delivery.botId}:${delivery.secret}/sendMessage`;
-  for (const part of splitMessage(delivery.text)) {
+  for (const part of messageParts(delivery.text)) {
     await withRetries(async () => {
       const reply = await postJson(url, { chat_id: delivery.chatId, text: part, disable_web_page_preview: true }, delivery.redact);
       if (typeof reply !== 'object' || reply === null || (reply as { ok?: unknown }).ok !== true) {

@@ -16,6 +16,18 @@
 
 ## Note
 
+### Once-per-day claim and `--resend`
+
+**What:** Design step 6 ("Run once per day"): before sending, `note` claims today's date in a store. If the claim is held, it exits 3 without sending. `--resend` skips the claim on purpose.
+
+**Why:** Today a rerun or a scheduler restart sends a second note. The README says to run it once a day with restart off until this ships.
+
+**Context:** The claim needs Postgres or a host store, which arrive with the scheduler. The design's `note_runs(day, claimed_at, sent_at)` table, with a unique key on `day`, is the claim. Exit code 3 (claim held) is unused so far; `src/run-main.ts` goes from 2 to 4.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** The scheduler and its store
+
 ### Subscription price history
 
 **What:** Record each price change for a subscription.
@@ -112,6 +124,7 @@
 1. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw, with a test.
 2. Doc drift: the `runMain` docstring should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
 3. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
+4. `send()` in `src/vendor-http.ts` reads the whole vendor body with `response.text()`, with no size cap. Cap it (for example 1 MB, then abort) so a broken vendor or a wrong base URL cannot fill memory.
 
 **Why:** None leaks a key in the current flow.
 
