@@ -92,3 +92,31 @@ test('a vendor redirect is written as a fixed same-origin or cross-origin value'
   const error = new VendorHttpError('E_VENDOR_HTTP', 'm', { status: 301, url: 'https://x', redirect: 'cross-origin' });
   assert.equal(formatError(error).error_redirect, 'cross-origin');
 });
+
+test('fields are captured when our error is built: changing it afterwards changes nothing that is logged', () => {
+  const error = new VendorHttpError('E_VENDOR_HTTP', 'pulseops E_VENDOR_HTTP: GET https://x returned 401', { status: 401, url: 'https://x' });
+  Object.defineProperty(error, 'message', { value: 'library text that leaked' });
+  Object.defineProperty(error, 'status', { get: () => 'LIB-TEXT' });
+  const fields = formatError(error);
+  assert.equal(fields.error_message, 'pulseops E_VENDOR_HTTP: GET https://x returned 401');
+  assert.equal(fields.error_status, 401);
+});
+
+test('an object that only looks like our error gives only its class, none of its fields', () => {
+  let reads = 0;
+  const forged = Object.create(VendorHttpError.prototype, {
+    status: { get: () => (++reads === 1 ? 1 : 'LIB-TEXT') },
+    code: { value: 'E_VENDOR_HTTP' },
+    message: { value: 'forged text' },
+  });
+  assert.deepEqual(formatError(forged), { error_class: 'VendorHttpError' });
+});
+
+test('a class name that is not a short identifier is written as Error', () => {
+  const weird = new Error('x');
+  Object.defineProperty(weird, 'constructor', { value: { name: 42 } });
+  assert.deepEqual(formatError(weird), { error_class: 'Error' });
+  const long = new Error('x');
+  Object.defineProperty(long, 'constructor', { value: { name: 'x'.repeat(200) } });
+  assert.deepEqual(formatError(long), { error_class: 'Error' });
+});

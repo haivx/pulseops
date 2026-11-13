@@ -1,4 +1,31 @@
-export type Redirect = 'same-origin' | 'cross-origin';
+import { readField, registerFields, safeClassName } from './error-fields.ts';
+
+export type Redirect = 'same-origin' | 'cross-origin' | 'invalid';
+
+/**
+ * Codes a network failure may carry, kept only when they match this list
+ * exactly, so the log can tell a timeout from a refused connection or DNS
+ * without writing any text a library produced.
+ */
+const CAUSE_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+  'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID',
+  'TimeoutError', 'AbortError',
+]);
+
+/** The first allowlisted code in a cause chain (3 levels), each property read once. */
+function causeCode(cause: unknown): string | undefined {
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (readField(() => cause instanceof Error) !== true) return undefined;
+    const code = readField(() => (cause as { code?: unknown }).code);
+    if (typeof code === 'string' && CAUSE_CODES.has(code)) return code;
+    const name = readField(() => (cause as Error).name);
+    if (typeof name === 'string' && CAUSE_CODES.has(name)) return name;
+    cause = readField(() => (cause as Error).cause);
+  }
+  return undefined;
+}
 
 export class VendorHttpError extends Error {
   readonly code: 'E_VENDOR_HTTP' | 'E_VENDOR_UNREACHABLE' | 'E_VENDOR_BAD_JSON';
@@ -18,14 +45,26 @@ export class VendorHttpError extends Error {
     this.status = options.status;
     this.url = options.url;
     this.redirect = options.redirect;
+    // The cause comes from a library: only its class and an allowlisted code are kept, read now.
+    const hasCause = readField(() => options.cause instanceof Error) === true;
+    registerFields(this, {
+      error_class: new.target.name,
+      error_code: code,
+      error_message: message,
+      error_status: options.status,
+      error_url: options.url,
+      error_redirect: options.redirect,
+      error_cause_class: hasCause ? safeClassName(options.cause, 'unformattable') : undefined,
+      error_cause_code: hasCause ? causeCode(options.cause) : undefined,
+    });
   }
 }
 
 const TIMEOUT_MS = 10_000;
 
 /**
- * For a 3xx, only whether the Location points to the same origin or another
- * one: a fixed value, never Location text, which the vendor controls and
+ * For a 3xx, only whether the Location points to the same origin, another
+ * one, or does not parse: a fixed value, never Location text, which the vendor controls and
  * could encode a key into (case, percent-encoding, fullwidth characters).
  */
 function redirectKind(response: Response, url: string): Redirect | undefined {
@@ -35,7 +74,7 @@ function redirectKind(response: Response, url: string): Redirect | undefined {
   try {
     return new URL(location, url).origin === new URL(url).origin ? 'same-origin' : 'cross-origin';
   } catch {
-    return undefined;
+    return 'invalid';
   }
 }
 

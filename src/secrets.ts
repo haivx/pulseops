@@ -1,6 +1,8 @@
 // Domain rule: API keys are read only from the environment, and never reach a
 // log, a database row in plain text, or an LLM prompt. See docs/rules/secrets.md.
 
+import { registerFields } from './error-fields.ts';
+
 export type Secret = { name: string; value: string };
 
 export class SecretError extends Error {
@@ -9,6 +11,7 @@ export class SecretError extends Error {
     super(message);
     this.name = 'SecretError';
     this.code = code;
+    registerFields(this, { error_class: new.target.name, error_code: code, error_message: message });
   }
 }
 

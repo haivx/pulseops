@@ -214,6 +214,8 @@ test('a 3xx says only whether it points to the same or another origin, and write
   assert.ok(!away.message.includes('new.example.com') && !away.message.includes('token=abc'));
   const here = await redirectTo('/api/v4/checks/', 302);
   assert.equal(here.redirect, 'same-origin');
+  const broken = await redirectTo('http://[', 302);
+  assert.equal(broken.redirect, 'invalid');
 });
 
 test('a 3xx whose Location host holds a key gives no hint, so no lowercased key can escape redaction', async () => {
