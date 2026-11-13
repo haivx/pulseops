@@ -75,3 +75,20 @@ test('an unreachable vendor names the cause class and a code from a fixed list, 
   const timeout = new VendorHttpError('E_VENDOR_UNREACHABLE', 'm', { cause: new DOMException('The operation was aborted due to timeout', 'TimeoutError') });
   assert.equal(formatError(timeout).error_cause_code, 'TimeoutError');
 });
+
+test('one read that throws loses only its own field, never the others', () => {
+  const cause = new Error('x');
+  Object.defineProperty(cause, 'code', { get() { throw new Error('boom'); } });
+  Object.defineProperty(cause, 'constructor', { get() { throw new Error('boom'); } });
+  const error = new VendorHttpError('E_VENDOR_UNREACHABLE', 'pulseops E_VENDOR_UNREACHABLE: GET https://x failed', { url: 'https://x', status: 0, cause });
+  const fields = formatError(error);
+  assert.equal(fields.error_code, 'E_VENDOR_UNREACHABLE');
+  assert.equal(fields.error_url, 'https://x');
+  assert.equal(fields.error_class, 'VendorHttpError');
+  assert.equal(fields.error_cause_class, 'unformattable');
+});
+
+test('a vendor redirect is written as a fixed same-origin or cross-origin value', () => {
+  const error = new VendorHttpError('E_VENDOR_HTTP', 'm', { status: 301, url: 'https://x', redirect: 'cross-origin' });
+  assert.equal(formatError(error).error_redirect, 'cross-origin');
+});

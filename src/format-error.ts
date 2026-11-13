@@ -15,15 +15,34 @@ const CAUSE_CODES = new Set([
   'TimeoutError', 'AbortError',
 ]);
 
-const className = (error: Error) => error.constructor.name || 'Error';
+/**
+ * Every read of the error goes through here. The error may come from anywhere
+ * (a library, a Proxy, an object with throwing getters), so each read stands
+ * alone: one that throws gives `undefined` and takes no other field with it.
+ */
+function readField<T>(get: () => T): T | undefined {
+  try {
+    return get();
+  } catch {
+    return undefined;
+  }
+}
+
+const isError = (value: unknown) => readField(() => value instanceof Error) === true;
+const className = (value: unknown) => readField(() => (value as Error).constructor.name || 'Error') ?? 'unformattable';
+const text = (get: () => unknown) => {
+  const value = readField(get);
+  return typeof value === 'string' ? value : undefined;
+};
 
 /** The first allowlisted code in the cause chain (3 levels), from `code` or a DOMException `name`. */
 function causeCode(cause: unknown): string | undefined {
-  for (let depth = 0; depth < 3 && cause instanceof Error; depth += 1) {
-    const code = (cause as { code?: unknown }).code;
-    if (typeof code === 'string' && CAUSE_CODES.has(code)) return code;
-    if (CAUSE_CODES.has(cause.name)) return cause.name;
-    cause = cause.cause;
+  for (let depth = 0; depth < 3 && isError(cause); depth += 1) {
+    const code = text(() => (cause as { code?: unknown }).code);
+    if (code !== undefined && CAUSE_CODES.has(code)) return code;
+    const name = text(() => (cause as Error).name);
+    if (name !== undefined && CAUSE_CODES.has(name)) return name;
+    cause = readField(() => (cause as Error).cause);
   }
   return undefined;
 }
@@ -31,31 +50,37 @@ function causeCode(cause: unknown): string | undefined {
 /**
  * The only place an error becomes log fields. PulseOps errors give their class,
  * `E_*` code and our own message (its URL already redacted); a vendor error
- * also gives its status, redacted URL, and for an unreachable vendor the
- * cause's class and an allowlisted code. Anything else, including any error a
- * library throws, gives only its class: never a third-party message, stack or
- * vendor body. It never throws, because it runs while a failing run exits.
+ * also gives its status, redacted URL, a fixed redirect kind, and for an
+ * unreachable vendor the cause's class and an allowlisted code. Anything else,
+ * including any error a library throws, gives only its class: never a
+ * third-party message, stack or vendor body. It never throws.
  */
 export function formatError(error: unknown): Record<string, Field> {
-  try {
-    if (!(error instanceof Error)) return { error_class: error === null ? 'null' : typeof error };
-    const fields: Record<string, Field> = { error_class: className(error) };
-    if (error instanceof VendorHttpError) {
-      fields.error_code = error.code;
-      fields.error_message = error.message;
-      if (error.status !== undefined) fields.error_status = error.status;
-      if (error.url !== undefined) fields.error_url = error.url;
-      if (error.cause instanceof Error) {
-        fields.error_cause_class = className(error.cause);
-        const code = causeCode(error.cause);
-        if (code !== undefined) fields.error_cause_code = code;
-      }
-    } else if (error instanceof SecretError || error instanceof ConfigError) {
-      fields.error_code = error.code;
-      fields.error_message = error.message;
-    }
-    return fields;
-  } catch {
-    return { error_class: 'unformattable' };
+  if (!isError(error)) {
+    const kind = readField(() => (error === null ? 'null' : typeof error));
+    return { error_class: readField(() => error instanceof Error) === undefined ? 'unformattable' : (kind ?? 'unformattable') };
   }
+  const fields: Record<string, Field> = { error_class: className(error) };
+  const set = (name: string, value: Field | undefined) => {
+    if (value !== undefined) fields[name] = value;
+  };
+  const vendor = readField(() => error instanceof VendorHttpError) === true;
+  const own = vendor || readField(() => error instanceof SecretError || error instanceof ConfigError) === true;
+  if (own) {
+    const known = error as VendorHttpError | SecretError | ConfigError;
+    set('error_code', text(() => known.code));
+    set('error_message', text(() => known.message));
+  }
+  if (vendor) {
+    const http = error as VendorHttpError;
+    set('error_status', readField(() => (typeof http.status === 'number' ? http.status : undefined)));
+    set('error_url', text(() => http.url));
+    set('error_redirect', text(() => http.redirect));
+    const cause = readField(() => http.cause);
+    if (isError(cause)) {
+      set('error_cause_class', className(cause));
+      set('error_cause_code', causeCode(cause));
+    }
+  }
+  return fields;
 }
