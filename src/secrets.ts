@@ -33,6 +33,12 @@ function invalidSecret(name: string): SecretError {
   );
 }
 
+/** Checks a value against the length and character rule, naming `name` but never echoing the value. */
+export function checkSecretValue(name: string, value: string): Secret {
+  if (value.length < MIN_SECRET_LENGTH || !SECRET_CHARS.test(value)) throw invalidSecret(name);
+  return { name, value };
+}
+
 export function readSecret(env: Record<string, string | undefined>, name: string): Secret {
   const value = env[name];
   if (value === undefined || value === '') {
@@ -41,8 +47,7 @@ export function readSecret(env: Record<string, string | undefined>, name: string
       `pulseops E_CONFIG_MISSING: environment variable ${name} is not set; fix: set ${name} in the environment`,
     );
   }
-  if (value.length < MIN_SECRET_LENGTH || !SECRET_CHARS.test(value)) throw invalidSecret(name);
-  return { name, value };
+  return checkSecretValue(name, value);
 }
 
 const lowerPercent = (text: string) => text.replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
