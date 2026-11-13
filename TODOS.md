@@ -131,6 +131,20 @@
 **Priority:** P2 (item 3 is P1 at deploy time)
 **Depends on:** None
 
+### Error-field registry: open review notes
+
+**What:** Four low-severity notes from the last `feat/typed-logger` review round, left unpatched under the stop rule in CLAUDE.md (the error-field code had findings in several rounds in a row):
+1. The class-name fallback differs: a non-PulseOps error with an odd class name logs `error_class: "Error"`, while the same thing as a vendor cause logs `error_cause_class: "unformattable"`. Pick one label.
+2. `registerFields` (`src/error-fields.ts`) is exported, so any module in the process could attach fields to any object. Decide whether in-process code is trusted, or keep the writer private (for example a check in `npm run check` that only the three error constructors call it).
+3. A PulseOps error logs `new.target.name` without the identifier check that other class names get.
+4. The identifier rule allows 64 characters of `[A-Za-z0-9_$]`, which could carry key-shaped text if an attacker controls a class name inside the process.
+
+**Why:** None leaks a key or a vendor body; they are label consistency and an in-process trust boundary. Decide whether any is worth a change before the collector adds new error classes.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None
+
 ### Encodings the redactor still misses
 
 **What:** Hex and double encodings are not recognized: hex, double URL-encoding and base64 of the URL-encoded key were all missed. With typed fields, a Buffer can no longer reach a log line, so the `<Buffer 6b 65 ...>` case is gone; the rest needs a decision on which encodings count as the key.
