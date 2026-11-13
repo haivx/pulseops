@@ -1,5 +1,6 @@
 import { ConfigError } from '../config-error.ts';
 import type { Logger } from '../log.ts';
+import { formatError } from '../format-error.ts';
 import { getJson, VendorHttpError } from '../vendor-http.ts';
 
 export const HEALTHCHECKS_DEFAULT_URL = 'https://healthchecks.io';
@@ -46,7 +47,8 @@ export async function readChecks(key: string, redact: (text: string) => string, 
   const body = await getJson(url, { 'X-Api-Key': key }, redact);
   const checks = typeof body === 'object' && body !== null ? (body as { checks?: unknown }).checks : undefined;
   if (!Array.isArray(checks)) {
-    throw new VendorHttpError('E_VENDOR_BAD_JSON', `pulseops E_VENDOR_BAD_JSON: GET ${url} returned JSON without a checks list`);
+    const shown = redact(url);
+    throw new VendorHttpError('E_VENDOR_BAD_JSON', `pulseops E_VENDOR_BAD_JSON: GET ${shown} returned JSON without a checks list`, { url: shown });
   }
   const statuses = new Map<string, string>();
   for (const check of checks) {
@@ -69,7 +71,7 @@ export async function checksOrUnavailable(read: () => Promise<Map<string, string
     return await read();
   } catch (error) {
     if (!(error instanceof VendorHttpError)) throw error;
-    log.error('healthchecks.io read failed', { source: 'healthchecks.io', error });
+    log.error('healthchecks.io read failed', { source: 'healthchecks.io', ...formatError(error) });
     return 'unavailable';
   }
 }

@@ -1,6 +1,7 @@
 // Domain rule: API keys are read only from the environment, and never reach a
 // log, a database row in plain text, or an LLM prompt. See docs/rules/secrets.md.
-import { strictStringify } from './serialize.ts';
+
+import { registerFields } from './error-fields.ts';
 
 export type Secret = { name: string; value: string };
 
@@ -10,6 +11,7 @@ export class SecretError extends Error {
     super(message);
     this.name = 'SecretError';
     this.code = code;
+    registerFields(this, { error_class: new.target.name, error_code: code, error_message: message });
   }
 }
 
@@ -106,13 +108,13 @@ export function createRedactor(secrets: Secret[]): (text: string) => string {
 }
 
 /**
- * Guard for anything about to be written to a database or sent in an LLM
- * prompt. Throws instead of redacting, because a stored or sent key cannot be
- * taken back. Errors, Maps, Sets and byte arrays are checked by content. A value
- * that cannot be serialized throws too: what cannot be checked is not written.
+ * Guard for the final text about to be written to a database or sent in an
+ * LLM prompt. It takes only that string, so what is checked is exactly what
+ * leaves: the caller builds the text first. Throws instead of redacting,
+ * because a stored or sent key cannot be taken back.
  */
-export function assertNoSecrets(value: unknown, secrets: Secret[], label: string): void {
-  const text = typeof value === 'string' ? value : strictStringify(value);
+export function assertNoSecrets(text: string, secrets: Secret[], label: string): void {
+  if (typeof text !== 'string') throw new TypeError(`assertNoSecrets(${label}) needs the final string, not a ${typeof text}`);
   const redacted = createRedactor(secrets)(text);
   if (redacted === text) return;
   const names = secrets.filter((secret) => redacted.includes(`[REDACTED:${secret.name}]`)).map((secret) => secret.name);

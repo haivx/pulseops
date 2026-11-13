@@ -17,12 +17,12 @@ await runMain(['HEALTHCHECKS_API_KEY'], async ({ secrets, log, redact }) => {
     process.exitCode = EXIT_USAGE;
   };
 
-  // Parsed here, not before runMain, so even an argument error is redacted.
   let args;
   try {
     args = parseArgs({ allowPositionals: true, options: { 'dry-run': { type: 'boolean' }, fleet: { type: 'string' } } });
-  } catch (error) {
-    return usage((error as Error).message);
+  } catch {
+    // parseArgs quotes the bad argument in its message, so it is not written.
+    return usage('invalid arguments');
   }
   if (args.positionals.length !== 1 || args.positionals[0] !== 'note') return usage('unknown command');
   if (args.values['dry-run'] !== true) return usage('sending is not built yet; fix: use --dry-run');

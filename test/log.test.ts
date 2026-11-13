@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRedactor } from '../src/secrets.ts';
 import { createLogger } from '../src/log.ts';
+import { formatError } from '../src/format-error.ts';
 import { getJson } from '../src/vendor-http.ts';
 import { fakeKey, leakForms, startLeakyServer } from './helpers/leaky-server.ts';
 
@@ -15,7 +16,7 @@ test('a real 401 from a vendor that echoes the key never reaches the log', async
     await assert.rejects(
       getJson(`${server.url}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }, createRedactor(secrets)),
       (error: unknown) => {
-        log.error('healthchecks.io read failed', { source: 'healthchecks.io', error });
+        log.error('healthchecks.io read failed', { source: 'healthchecks.io', ...formatError(error) });
         return true;
       },
     );
@@ -25,122 +26,67 @@ test('a real 401 from a vendor that echoes the key never reaches the log', async
   const output = lines.join('\n');
   assert.ok(output.includes('E_VENDOR_HTTP'), 'the failure is logged with its code');
   assert.ok(output.includes('401'), 'the status is logged');
-  assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'), 'the key position is marked');
+  assert.ok(output.includes('[REDACTED:HEALTHCHECKS_API_KEY]'), 'the key position in the URL is marked');
   for (const form of leakForms(key)) assert.ok(!output.includes(form), 'a leak form reached the log');
 });
 
-test('logger redacts the message, nested fields, and an error cause and stack', () => {
+test('logger writes one JSON line per call, level and msg first, then the fields', () => {
+  const lines: string[] = [];
+  createLogger(createRedactor([]), (line) => lines.push(line)).info('note sent', { app_count: 3, dry_run: true, source: 'healthchecks.io' });
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0], '{"level":"info","msg":"note sent","app_count":3,"dry_run":true,"source":"healthchecks.io"}');
+});
+
+test('a key in the message or in a field is still redacted, as the second layer', () => {
+  const key = fakeKey('gh');
+  const lines: string[] = [];
+  createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line)).warn(`retrying with ${key}`, { header: `Bearer ${key}` });
+  assert.ok(!lines[0]!.includes(key));
+  assert.equal(lines[0]!.split('[REDACTED:GITHUB_TOKEN]').length - 1, 2);
+});
+
+test('an object, Error or array that gets past the type is dropped, never serialized', () => {
   const key = fakeKey('gh');
   const lines: string[] = [];
   const log = createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line));
-  const cause = new Error(`token ${key} rejected`);
-  log.warn(`retrying with ${key}`, { request: { headers: { authorization: `Bearer ${key}` } }, error: new Error('outer', { cause }) });
-  const output = lines.join('\n');
-  assert.ok(!output.includes(key));
-  assert.ok(output.includes('outer'));
-  assert.ok(output.includes('rejected'));
+  const smuggled = { error: new Error(`token ${key}`), body: Buffer.from(key), list: [key], boxed: new String(key), count: 2 };
+  log.error('failed', smuggled as unknown as Record<string, string>);
+  assert.equal(
+    lines[0],
+    '{"level":"error","msg":"failed","error":"[dropped: object]","body":"[dropped: object]","list":"[dropped: object]","boxed":"[dropped: object]","count":2}',
+  );
 });
 
-test('logger redacts a key held in a Buffer or Uint8Array field', () => {
-  const key = fakeKey('gh');
-  const lines: string[] = [];
-  const log = createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line));
-  log.error('request failed', { body: Buffer.from(`token=${key}`), raw: new TextEncoder().encode(key) });
-  const output = lines.join('\n');
-  assert.ok(!output.includes(key));
-  assert.ok(!output.includes([...Buffer.from(key)].join(',')), 'the key leaked as a byte array');
-  assert.equal(output.split('[REDACTED:GITHUB_TOKEN]').length - 1, 2);
-});
-
-test('logger keeps the original error when its cause is circular, and never throws', () => {
-  const lines: string[] = [];
-  const log = createLogger(createRedactor([]), (line) => lines.push(line));
-  const cause: Record<string, unknown> = { step: 'fetch' };
-  cause.self = cause;
-  assert.doesNotThrow(() => log.error('failed', { error: new Error('vendor failed', { cause }), count: 10n }));
-  assert.equal(lines.length, 1);
-  const entry = JSON.parse(lines[0]!) as { error: { message: string }; count: string };
-  assert.equal(entry.error.message, 'vendor failed');
-  assert.equal(entry.count, '10');
-});
-
-test('logger writes one JSON line per call with level and message', () => {
-  const lines: string[] = [];
-  const log = createLogger(createRedactor([]), (line) => lines.push(line));
-  log.info('note sent', { app_count: 3 });
-  assert.equal(lines.length, 1);
-  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
-  assert.equal(entry.level, 'info');
-  assert.equal(entry.msg, 'note sent');
-  assert.equal(entry.app_count, 3);
-});
-
-test('an object referenced twice is written in full both times; only a true cycle is [Circular]', () => {
-  const lines: string[] = [];
-  const log = createLogger(createRedactor([]), (line) => lines.push(line));
-  const shared = { app: 'app-1' };
-  const cycle: Record<string, unknown> = { step: 'fetch' };
-  cycle.self = cycle;
-  log.info('x', { a: shared, b: shared, cycle });
-  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
-  assert.deepEqual(entry.a, shared);
-  assert.deepEqual(entry.b, shared);
-  assert.deepEqual(entry.cycle, { step: 'fetch', self: '[Circular]' });
-});
-
-test('a field named level or msg cannot overwrite the real ones', () => {
+test('a field named level or msg is renamed, so it cannot replace the real ones', () => {
   const lines: string[] = [];
   createLogger(createRedactor([]), (line) => lines.push(line)).info('real', { level: 'error', msg: 'fake' });
+  assert.equal(lines[0], '{"level":"info","msg":"real","field_level":"error","field_msg":"fake"}');
+});
+
+test('the type refuses an object or Error as a field', () => {
+  const log = createLogger(createRedactor([]), () => {});
+  // @ts-expect-error: fields are string | number | boolean only.
+  log.info('x', { error: new Error('no') });
+  // @ts-expect-error: fields are string | number | boolean only.
+  log.info('x', { nested: { a: 1 } });
+});
+
+test('a message that is not a string is dropped, never serialized', () => {
+  const lines: string[] = [];
+  createLogger(createRedactor([]), (line) => lines.push(line)).error({ token: 'x' } as unknown as string);
+  assert.equal(lines[0], '{"level":"error","msg":"[dropped: object]"}');
+});
+
+test('a renamed reserved field never overwrites another field, an own __proto__ is kept, and drops name their type', () => {
+  const lines: string[] = [];
+  const fields = JSON.parse('{"level":"x","field_level":"y","__proto__":"p"}') as Record<string, string>;
+  Object.assign(fields, { gone: undefined, big: 10n });
+  createLogger(createRedactor([]), (line) => lines.push(line)).info('m', fields);
   const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
   assert.equal(entry.level, 'info');
-  assert.equal(entry.msg, 'real');
-});
-
-test('logger never throws when a field cannot be serialized, even if the error is hostile', () => {
-  const lines: string[] = [];
-  const log = createLogger(createRedactor([]), (line) => lines.push(line));
-  assert.doesNotThrow(() => log.error('failed', { bad: { toJSON() { throw new Error('boom'); } } }));
-  assert.deepEqual(JSON.parse(lines[0]!), { level: 'error', msg: 'failed', serialization_error: 'boom' });
-  const hostile = { toJSON() { throw { get message(): string { throw new Error('nested'); } }; } };
-  assert.doesNotThrow(() => log.error('failed again', { hostile }));
-  assert.equal((JSON.parse(lines[1]!) as Record<string, unknown>).msg, 'failed again');
-});
-
-test('a deeply nested value is cut, not lost: the other fields still land', () => {
-  const lines: string[] = [];
-  const log = createLogger(createRedactor([]), (line) => lines.push(line));
-  log.info('ok', { body: JSON.parse(`${'['.repeat(6000)}${']'.repeat(6000)}`), app: 'app-1' });
-  const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
-  assert.equal(entry.app, 'app-1');
-  assert.ok(lines[0]!.includes('[Depth]'));
-  assert.equal(entry.serialization_error, undefined);
-});
-
-test('an Error whose message, name or stack is bytes is written as text, so the key is redacted', () => {
-  const key = fakeKey('gh');
-  const lines: string[] = [];
-  const log = createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line));
-  const error = new Error('x');
-  Object.defineProperty(error, 'message', { value: Buffer.from(`token ${key}`) });
-  log.error('failed', { error });
-  assert.ok(!lines[0]!.includes('"data":['), 'the message was written as a byte array');
-  assert.ok(lines[0]!.includes('[REDACTED:GITHUB_TOKEN]'));
-});
-
-test('a boxed String holding the key is written as one string, so the key is redacted', () => {
-  const key = fakeKey('gh');
-  const lines: string[] = [];
-  createLogger(createRedactor([{ name: 'GITHUB_TOKEN', value: key }]), (line) => lines.push(line)).info('x', { token: new String(key) });
-  assert.ok(lines[0]!.includes('[REDACTED:GITHUB_TOKEN]'));
-  assert.ok(!lines[0]!.includes(`"0":"${key[0]}"`), 'the key was written one character per field');
-});
-
-test('a value that shares objects at every level is cut at a node budget, not expanded exponentially', () => {
-  let node: Record<string, unknown> = { leaf: true };
-  for (let i = 0; i < 40; i++) node = { a: node, b: node };
-  const lines: string[] = [];
-  createLogger(createRedactor([]), (line) => lines.push(line)).info('x', { body: node, app: 'app-1' });
-  assert.ok(lines[0]!.length < 2_000_000, `line is ${lines[0]!.length} bytes`);
-  assert.ok(lines[0]!.includes('[Truncated]'));
-  assert.equal((JSON.parse(lines[0]!) as Record<string, unknown>).app, 'app-1');
+  // Both values survive under field_* names; neither overwrites the other.
+  assert.deepEqual([entry.field_level, entry.field_field_level].sort(), ['x', 'y']);
+  assert.equal(Object.getOwnPropertyDescriptor(entry, '__proto__')?.value, 'p');
+  assert.equal(entry.gone, '[dropped: undefined]');
+  assert.equal(entry.big, '[dropped: bigint]');
 });

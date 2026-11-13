@@ -48,8 +48,11 @@ test('a fleet file with no apps is refused', () => {
   assert.throws(() => parseFleet('timezone: UTC\napps: []\n'), (error: unknown) => error instanceof FleetError && error.message.includes('no apps'));
 });
 
-test('YAML that does not parse is reported with its line', () => {
-  assert.throws(() => parseFleet('timezone: UTC\napps:\n  - name: [unclosed\n'), (error: unknown) => error instanceof FleetError && /line \d+/.test(error.message));
+test('YAML that does not parse is reported with its line and the parser code, never the parser text', () => {
+  assert.throws(
+    () => parseFleet('timezone: UTC\napps:\n  - name: [unclosed\n'),
+    (error: unknown) => error instanceof FleetError && /line \d+ \([A-Z_]+\)/.test(error.message) && !/flow|sequence|expected/i.test(error.message),
+  );
 });
 
 test('the same slug used twice is refused, because each check must map to one fleet entry', () => {

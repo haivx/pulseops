@@ -118,55 +118,43 @@
 
 ## Secrets guard
 
-### Logger takes typed fields, not objects
-
-**What:** Replace "serialize anything, then redact" with a logger that cannot be handed an object:
-- `log(level, msg, fields)` where each field is only `string | number | boolean` or an `E_*` code; the type rejects objects and Errors.
-- One `formatError(err)` that writes the class, the `E_*` code, the status and the URL already redacted. It never writes a third-party library's message or stack.
-- `assertNoSecrets` runs on the final string that is written or sent, never on an object.
-- When done, delete the serializer branches nothing uses any more (Buffer, Map, Set, cycles, depth and node limits).
-
-**Why:** Three review rounds kept finding new value shapes the serializer misread (bytes, boxed strings, shared graphs, getters). Typed fields remove the whole class instead of patching each shape. The owner decided on 2026-11-12 that the serializer gets no more patches after `chore/logger-hardening`.
-
-**Also from the last `chore/logger-hardening` review round, not patched under the stop rule in CLAUDE.md:** a boxed `String` with its own `valueOf` can return a Buffer that skips byte-to-text conversion; `SerializeLimitError` is not a `SecretError` and has no `code`, though its message says `E_SECRET_IN_OUTPUT`; and the 10,000-node strict budget rejects a large but linear value such as a batch of rows. None is reachable today (the only `assertNoSecrets` caller passes a string), and checking the final string removes all three.
-
-**Context:** Supersedes most of "Logger follow-ups after hardening" and "Encodings and checks the redactor still misses" below; close those items that no longer apply when this lands.
-
-**Effort:** M
-**Priority:** P1
-**Depends on:** `chore/logger-hardening` merged
-
 ### Logger follow-ups after hardening
 
-**What:** Left open by the `chore/logger-hardening` review (the owner fixed only the leak regressions there):
-1. An own `toJSON` on an Error replaces the whole serialized Error (`src/serialize.ts`, Error branch); drop function-valued children.
-2. `stack` and `cause` getters are read twice in the Error branch.
-3. The 3xx hint lowercases the host, so a key in a `Location` host escapes redaction; redact the raw `Location` first and omit the hint if it held a key (`src/vendor-http.ts` `redirectHint`).
-4. Log lines put `level` and `msg` last since the override fix; put them first and rename colliding fields.
-5. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw.
-6. Tests: the logger fallback with a thrown `Object.create(null)`, and a second `runMain` call.
-7. Doc drift: `describe()` sits between `createLogger`'s JSDoc and the function; `docs/rules/secrets.md` "How it is tested" omits the floating and stall cases and the new vendor-http tests; the `runMain` docstring and this file's Completed note should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
-8. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
+**What:** Left open by the `chore/logger-hardening` review and not covered by the typed logger:
+1. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw, with a test.
+2. Doc drift: the `runMain` docstring should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
+3. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
 
-**Why:** None leaks a key in the current flow; most go away with the typed logger above.
+**Why:** None leaks a key in the current flow.
 
 **Effort:** S
-**Priority:** P2 (item 8 is P1 at deploy time)
+**Priority:** P2 (item 3 is P1 at deploy time)
 **Depends on:** None
 
-### Encodings and checks the redactor still misses
+### Error-field registry: open review notes
 
-**What:** The two points the `chore/logger-hardening` PR left open.
+**What:** Four low-severity notes from the last `feat/typed-logger` review round, left unpatched under the stop rule in CLAUDE.md (the error-field code had findings in several rounds in a row):
+1. The class-name fallback differs: a non-PulseOps error with an odd class name logs `error_class: "Error"`, while the same thing as a vendor cause logs `error_cause_class: "unformattable"`. Pick one label.
+2. `registerFields` (`src/error-fields.ts`) is exported, so any module in the process could attach fields to any object. Decide whether in-process code is trusted, or keep the writer private (for example a check in `npm run check` that only the three error constructors call it).
+3. A PulseOps error logs `new.target.name` without the identifier check that other class names get.
+4. The identifier rule allows 64 characters of `[A-Za-z0-9_$]`, which could carry key-shaped text if an attacker controls a class name inside the process.
 
-1. **Hex and double encodings are not recognized.** `util.inspect` prints Buffers as `<Buffer 6b 65 ...>` inside error messages. Hex, double URL-encoding and base64 of the URL-encoded key were all missed. Decide which encodings count as the key.
-2. **`assertNoSecrets` can check something other than what is written.** It misses `toString` with private fields used through `${obj}`, symbol and non-enumerable properties, `SharedArrayBuffer`, and Errors from another realm (use `Error.isError`). The rule doc should say to assert on the final string that is written or sent.
-
-**Why:** Neither leaks a key in today's flow (keys are `A-Z a-z 0-9 . _ -`, and nothing writes to a database or an LLM yet), but both matter once those writers exist.
-
-**Context:** Found in the PR #2 review; the owner deferred them. Also noted there, with no decision yet: base64 wrapped across lines, keys stored as UTF-16 bytes, `Headers` or `URLSearchParams` objects passed to `assertNoSecrets`, and a size cap on vendor bodies.
+**Why:** None leaks a key or a vendor body; they are label consistency and an in-process trust boundary. Decide whether any is worth a change before the collector adds new error classes.
 
 **Effort:** S
-**Priority:** P2
+**Priority:** P3
+**Depends on:** None
+
+### Encodings the redactor still misses
+
+**What:** Hex and double encodings are not recognized: hex, double URL-encoding and base64 of the URL-encoded key were all missed. With typed fields, a Buffer can no longer reach a log line, so the `<Buffer 6b 65 ...>` case is gone; the rest needs a decision on which encodings count as the key.
+
+**Why:** No current path writes a key in these encodings (keys are `A-Z a-z 0-9 . _ -` and are never put in a field on purpose), but a vendor could echo one into the URL.
+
+**Context:** Also noted in the PR #2 review, with no decision yet: base64 wrapped across lines.
+
+**Effort:** S
+**Priority:** P3
 **Depends on:** None
 
 ## Docs
@@ -226,3 +214,7 @@
 ### Logger and redactor hardening
 
 **Completed:** `chore/logger-hardening` (2026-11-12). `createRedactor` applies the same character rule as `readSecret`; a failing run exits after 2 seconds even if stderr never drains (not on Linux, where a full pipe blocks first); `safeStringify` caps depth at 100 and nodes at 10,000, writes shared objects in full within that budget, unboxes boxed primitives, writes an Error message made of bytes as text and keeps an own `__proto__` as data; `assertNoSecrets` throws instead of passing a value past those limits; a field cannot replace `level` or `msg`, and the logger fallback never throws; `getJson` messages carry the URL redacted, and a 3xx names the origin it points to; the `uncaughtException` and `unhandledRejection` handlers are installed once; tests cover a floating rejection, a full stderr, a body that is not JSON (cause included) and base64 offset 1.
+
+### Logger takes typed fields, not objects
+
+**Completed:** `feat/typed-logger` (2026-11-12). Log fields are `string | number | boolean` only, an error becomes fields only through `formatError` (class, `E_*` code, status, redacted URL; never a library's message or stack, never a vendor body), `assertNoSecrets` takes only the final string, and `src/serialize.ts` is deleted.

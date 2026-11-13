@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRedactor } from '../src/secrets.ts';
 import { createLogger } from '../src/log.ts';
+import { formatError } from '../src/format-error.ts';
 import { getJson, VendorHttpError } from '../src/vendor-http.ts';
 import { fakeKey, leakForms } from './helpers/leaky-server.ts';
 
@@ -24,7 +25,7 @@ function longestPrefix(text: string, key: string): number {
   return 0;
 }
 
-test('a key echoed across the detail cut leaves no prefix of it in the log', async () => {
+test('a vendor body that echoes the key leaves no part of it in the log', async () => {
   const key = fakeKey('hc');
   const secrets = [{ name: 'HEALTHCHECKS_API_KEY', value: key }];
   const redact = createRedactor(secrets);
@@ -34,7 +35,7 @@ test('a key echoed across the detail cut leaves no prefix of it in the log', asy
   const server = await serve(401, `${'x'.repeat(480)}${key}`);
   try {
     await assert.rejects(getJson(`${server.url}/api/v3/checks/`, {}, redact), (error: unknown) => {
-      log.error('read failed', { error });
+      log.error('read failed', formatError(error));
       return error instanceof VendorHttpError && error.code === 'E_VENDOR_HTTP';
     });
   } finally {
@@ -115,7 +116,7 @@ test('an unreachable vendor fails with E_VENDOR_UNREACHABLE and the logged error
   const url = server.url;
   await server.close();
   await assert.rejects(getJson(`${url}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }, redact), (error: unknown) => {
-    log.error('healthchecks.io read failed', { error });
+    log.error('healthchecks.io read failed', formatError(error));
     return error instanceof VendorHttpError && error.code === 'E_VENDOR_UNREACHABLE';
   });
   const output = lines.join('\n');
@@ -145,7 +146,7 @@ test('a 2xx body cut off mid-read fails with E_VENDOR_UNREACHABLE and the logged
     await assert.rejects(
       getJson(`http://127.0.0.1:${address.port}/api/v3/checks/?api_key=${encodeURIComponent(key)}`, { 'X-Api-Key': key }, redact),
       (error: unknown) => {
-        log.error('read failed', { error });
+        log.error('read failed', formatError(error));
         return error instanceof VendorHttpError && error.code === 'E_VENDOR_UNREACHABLE' && error.status === 200;
       },
     );
@@ -165,7 +166,7 @@ test('a body that is not JSON leaves nothing of the body in the log, cause inclu
   const server = await serve(200, `${key} is not JSON`);
   try {
     await assert.rejects(getJson(`${server.url}/api/v2/monitors`, {}, redact), (error: unknown) => {
-      log.error('read failed', { error });
+      log.error('read failed', formatError(error));
       return error instanceof VendorHttpError && error.code === 'E_VENDOR_BAD_JSON' && error.cause === undefined;
     });
   } finally {
@@ -188,22 +189,62 @@ test('error messages carry the URL already redacted, so a saved message holds no
   }
 });
 
-test('a 3xx error names the origin it points to, never its path or query', async () => {
+async function redirectTo(location: string, status = 301): Promise<VendorHttpError> {
   const redirecting = createServer((_req, res) => {
-    res.writeHead(301, { location: 'https://new.example.com/v4/checks/?token=abc' });
+    res.writeHead(status, { location });
     res.end();
   });
   await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve));
   const address = redirecting.address();
   if (address === null || typeof address === 'string') throw new Error('server has no port');
   try {
-    await assert.rejects(getJson(`http://127.0.0.1:${address.port}/api/v3/checks/`, {}, (t) => t), (error: unknown) =>
+    let caught: unknown;
+    await getJson(`http://127.0.0.1:${address.port}/api/v3/checks/`, {}, (t) => t).catch((error: unknown) => (caught = error));
+    assert.ok(caught instanceof VendorHttpError);
+    return caught;
+  } finally {
+    await new Promise<void>((resolve) => redirecting.close(() => resolve()));
+  }
+}
+
+test('a 3xx says only whether it points to the same or another origin, and writes no Location text', async () => {
+  const away = await redirectTo('https://new.example.com/v4/checks/?token=abc');
+  assert.equal(away.status, 301);
+  assert.equal(away.redirect, 'cross-origin');
+  assert.ok(!away.message.includes('new.example.com') && !away.message.includes('token=abc'));
+  const here = await redirectTo('/api/v4/checks/', 302);
+  assert.equal(here.redirect, 'same-origin');
+  const broken = await redirectTo('http://[', 302);
+  assert.equal(broken.redirect, 'invalid');
+});
+
+test('a 3xx whose Location host holds a key gives no hint, so no lowercased key can escape redaction', async () => {
+  const key = fakeKey('HC');
+  const redact = createRedactor([{ name: 'HEALTHCHECKS_API_KEY', value: key }]);
+  const redirecting = createServer((_req, res) => {
+    res.writeHead(302, { location: `https://${key}.example.com/` });
+    res.end();
+  });
+  await new Promise<void>((resolve) => redirecting.listen(0, '127.0.0.1', resolve));
+  const address = redirecting.address();
+  if (address === null || typeof address === 'string') throw new Error('server has no port');
+  try {
+    await assert.rejects(getJson(`http://127.0.0.1:${address.port}/x`, {}, redact), (error: unknown) =>
       error instanceof VendorHttpError &&
-      error.status === 301 &&
-      error.message.includes('redirects to https://new.example.com') &&
-      !error.message.includes('token=abc'),
+      error.redirect === 'cross-origin' &&
+      !error.message.toLowerCase().includes(key.toLowerCase()),
     );
   } finally {
     await new Promise<void>((resolve) => redirecting.close(() => resolve()));
   }
+});
+
+// A fullwidth host cannot be sent from Node's HTTP server (headers must be
+// Latin-1); it is covered by the same rule, since no Location text is kept.
+test('a percent-encoded Location host holding a key writes no part of it', async () => {
+  const key = fakeKey('HC');
+  const encoded = `${key.slice(0, 8)}%${key.charCodeAt(8).toString(16).toUpperCase()}${key.slice(9)}`;
+  const error = await redirectTo(`https://${encoded}.example.com/`);
+  assert.equal(error.redirect, 'cross-origin');
+  assert.ok(!error.message.toLowerCase().includes(key.toLowerCase().slice(0, 12)), 'part of the key reached the message');
 });

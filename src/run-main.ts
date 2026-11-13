@@ -1,4 +1,5 @@
 import { createLogger, type Logger } from './log.ts';
+import { formatError } from './format-error.ts';
 import { createRedactor, readSecret, SecretError, type Secret } from './secrets.ts';
 
 /** Exit codes from the plan: 1 unexpected failure, 2 usage or validation error. */
@@ -45,13 +46,17 @@ export async function runMain(secretNames: string[], command: (context: CommandC
     if (failing) return;
     failing = true;
     process.exitCode = EXIT_FAILURE;
-    log.error('unexpected failure', { error });
-    // Exit after stderr has taken the line; the callback runs once it is flushed.
-    process.stderr.write('', () => process.exit(EXIT_FAILURE));
-    // If stderr never drains (a reader that stopped reading), exit anyway.
-    // Where pipe writes are synchronous (Linux), a full pipe blocks before
-    // this timer can run; that case needs the reader to drain the pipe.
+    // Armed first, so nothing below can keep a failing run alive. If stderr
+    // never drains (a reader that stopped reading), this still exits. Where
+    // pipe writes are synchronous (Linux), a full pipe blocks before this
+    // timer can run; that case needs a watchdog in the scheduler.
     setTimeout(() => process.exit(EXIT_FAILURE), EXIT_FLUSH_LIMIT_MS).unref();
+    try {
+      log.error('unexpected failure', formatError(error));
+    } finally {
+      // Exit after stderr has taken the line; the callback runs once it is flushed.
+      process.stderr.write('', () => process.exit(EXIT_FAILURE));
+    }
   };
   activeFail = fail;
   if (!handlersInstalled) {

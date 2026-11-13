@@ -76,7 +76,7 @@ test('redactor leaves text without secrets unchanged', () => {
 
 test('assertNoSecrets passes a clean database row', () => {
   const secrets = [{ name: 'GITHUB_TOKEN', value: fakeKey() }];
-  assert.doesNotThrow(() => assertNoSecrets({ app: 'app-1', status: 'ok' }, secrets, 'note_runs row'));
+  assert.doesNotThrow(() => assertNoSecrets(JSON.stringify({ app: 'app-1', status: 'ok' }), secrets, 'note_runs row'));
 });
 
 test('assertNoSecrets blocks a database row that carries a key, and names it without the value', () => {
@@ -84,7 +84,7 @@ test('assertNoSecrets blocks a database row that carries a key, and names it wit
   const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
   const row = { app: 'app-1', last_error: { detail: `request to /repos?access_token=${encodeURIComponent(key)} failed` } };
   assert.throws(
-    () => assertNoSecrets(row, secrets, 'note_runs row'),
+    () => assertNoSecrets(JSON.stringify(row), secrets, 'note_runs row'),
     (error: unknown) =>
       error instanceof SecretError &&
       error.code === 'E_SECRET_IN_OUTPUT' &&
@@ -94,30 +94,6 @@ test('assertNoSecrets blocks a database row that carries a key, and names it wit
   );
 });
 
-test('assertNoSecrets blocks a key inside an Error, a Map, a Set or a Buffer', () => {
-  const key = fakeKey();
-  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
-  const rows = [
-    { last_error: new Error(`token ${key} rejected`) },
-    { meta: new Map([['token', key]]) },
-    { tags: new Set([key]) },
-    { body: Buffer.from(key) },
-  ];
-  for (const row of rows) assert.throws(() => assertNoSecrets(row, secrets, 'note_runs row'), SecretError);
-});
-
-test('assertNoSecrets blocks a key in any Error property, an AggregateError, or a deep cause chain', () => {
-  const key = fakeKey();
-  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
-  const withConfig = Object.assign(new Error('request failed'), { config: { headers: { 'X-Api-Key': key } } });
-  const aggregate = new AggregateError([new Error(`token ${key} rejected`)], 'all requests failed');
-  let deep = new Error(`token ${key} rejected`);
-  for (let i = 0; i < 7; i++) deep = new Error(`wrapper ${i}`, { cause: deep });
-  for (const error of [withConfig, aggregate, deep]) {
-    assert.throws(() => assertNoSecrets({ last_error: error }, secrets, 'note_runs row'), SecretError);
-  }
-});
-
 test('createRedactor refuses a hand-built secret with characters an encoder would escape', () => {
   // readSecret already refuses these; a Secret built by hand must not bypass the rule.
   for (const char of ['+', '/', '=', '~', '"', '\\']) {
@@ -125,31 +101,10 @@ test('createRedactor refuses a hand-built secret with characters an encoder woul
   }
 });
 
-test('an Error with an own __proto__ property is checked by content, not by its prototype', () => {
-  const key = fakeKey();
-  const error = new Error('request failed');
-  Object.defineProperty(error, '__proto__', { value: { token: key }, enumerable: true });
-  assert.throws(() => assertNoSecrets({ last_error: error }, [{ name: 'GITHUB_TOKEN', value: key }], 'note_runs row'), SecretError);
-});
-
-test('assertNoSecrets fails closed on a value too deep or too large to check in full', () => {
-  const key = fakeKey();
-  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
-  let deep: unknown = { token: key };
-  for (let i = 0; i < 120; i++) deep = { d: deep };
-  assert.throws(() => assertNoSecrets(deep, secrets, 'note_runs row'));
-  let wide: Record<string, unknown> = { leaf: true };
-  for (let i = 0; i < 40; i++) wide = { a: wide, b: wide };
-  assert.throws(() => assertNoSecrets(wide, secrets, 'note_runs row'));
-});
-
-test('assertNoSecrets blocks a key in a boxed String or in an Error message made of bytes', () => {
-  const key = fakeKey();
-  const secrets = [{ name: 'GITHUB_TOKEN', value: key }];
-  assert.throws(() => assertNoSecrets({ t: new String(key) }, secrets, 'note_runs row'), SecretError);
-  const error = new Error('x');
-  Object.defineProperty(error, 'message', { value: Buffer.from(key) });
-  assert.throws(() => assertNoSecrets({ last_error: error }, secrets, 'note_runs row'), SecretError);
+test('assertNoSecrets takes only the final string, never an object', () => {
+  const secrets = [{ name: 'GITHUB_TOKEN', value: fakeKey() }];
+  // @ts-expect-error: the caller must pass the exact text it will write or send.
+  assert.throws(() => assertNoSecrets({ app: 'app-1' }, secrets, 'note_runs row'), TypeError);
 });
 
 test('assertNoSecrets blocks an LLM prompt that carries a key', () => {
@@ -161,21 +116,6 @@ test('assertNoSecrets blocks an LLM prompt that carries a key', () => {
 
 // Value: protects=assertNoSecrets fails closed when a value cannot be serialized; fails_when=a catch around safeStringify lets an unchecked
 // value pass as clean; why_new=no test gives assertNoSecrets an unserializable value; seam=none; no_claim=other serializer failures (one throwing toJSON)
-test('assertNoSecrets throws for a value it cannot serialize instead of passing it', () => {
-  const secrets = [{ name: 'GITHUB_TOKEN', value: fakeKey() }];
-  const row = {
-    app: 'app-1',
-    detail: {
-      toJSON() {
-        throw new Error('cannot serialize');
-      },
-    },
-  };
-  assert.throws(() => assertNoSecrets(row, secrets, 'note_runs row'));
-});
-
-// Value: protects=a long base64-like run with no key passes through the redactor unchanged; fails_when=the base64 pass rewrites or marks runs
-// that decode to no key; why_new=the clean-text test has no 20+ character run; seam=none; no_claim=every path shape (one path, one key)
 test('redactor leaves a long base64-like path without a key unchanged', () => {
   const redact = createRedactor([{ name: 'GITHUB_TOKEN', value: fakeKey() }]);
   const path = '/Users/abc/Documents/project/src/file/name';
