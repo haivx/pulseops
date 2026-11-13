@@ -16,6 +16,20 @@
 
 ## Note
 
+### Telegram send: follow-ups from the third review round
+
+**What:** Left from the `feat/telegram-send` review of the typed delivery result, deferred by the owner (only the duplicate-send, false-delivery and partial-refusal findings were fixed):
+1. The send budget runs on `Date.now()` (`src/cli.ts`, `now`). A clock stepped back (NTP, VM resume) stretches it; one probe sent 300 parts over about 3000 s. Use `performance.now()`.
+2. `splitMessage` (`src/telegram.ts`) can produce a part that is only blank space plus its "(i/n)" marker, for example 29 newlines. Drop or merge parts where `part.trim() === ''`.
+3. Two assertions in `test/telegram.test.ts` ("sending stops within the time budget") check nothing: the fake clock moves only in sleeps, so deleting the pre-try check still passes, and the watchdog line sums constants. Make the fake request take 10 s on the clock and assert the deadline is never crossed, with an all-503 case that stops at the try check.
+4. Docs: README has no exit `1` (a bug, or `assertNoSecrets` stopping a send; no ping, so the note check alerts). `docs/designs/pulseops-daily-note.md` still says sending is not built (line 329), its exit table gives 2 only as a usage error, and step 2 says "retry on a failure" without saying 4xx is not retried.
+
+**Why:** None sends a duplicate, hides a missing note or leaks a key; item 1 can outlast a `timeout 120` watchdog only after a clock jump.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
 ### Once-per-day claim and `--resend`
 
 **What:** Design step 6 ("Run once per day"): before sending, `note` claims today's date in a store. If the claim is held, it exits 3 without sending. `--resend` skips the claim on purpose.

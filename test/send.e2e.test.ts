@@ -19,7 +19,7 @@ function writeFleet(): string {
 }
 
 /** One fake for all three vendors: healthchecks.io checks, Telegram sendMessage and the ping endpoint. */
-async function fakeVendors(telegramStatus: number, pingStatus = 200) {
+async function fakeVendors(telegramStatus: number, pingStatus = 200, telegramReply?: string) {
   const calls = { checks: 0, telegram: [] as string[], pings: [] as string[] };
   const server = createServer((req, res) => {
     let body = '';
@@ -33,7 +33,9 @@ async function fakeVendors(telegramStatus: number, pingStatus = 200) {
       } else if (url.includes('/sendMessage')) {
         calls.telegram.push(body);
         res.writeHead(telegramStatus, { 'content-type': 'application/json' });
-        res.end(telegramStatus === 200 ? '{"ok":true,"result":{}}' : '{"ok":false,"description":"down"}');
+        const chat = Number((JSON.parse(body) as { chat_id: string }).chat_id);
+        const sent = JSON.stringify({ ok: true, result: { message_id: 7, chat: { id: chat } } });
+        res.end(telegramReply ?? (telegramStatus === 200 ? sent : '{"ok":false,"description":"down"}'));
       } else {
         calls.pings.push(url);
         res.writeHead(pingStatus);
@@ -201,6 +203,21 @@ test('a Telegram 408 is temporary: retried 3 times, then exit 4, not a config er
     assert.equal(code, 4, stderr);
     assert.equal(vendors.calls.telegram.length, 3);
     assert.ok(!stderr.includes('fix:'));
+  } finally {
+    await vendors.close();
+  }
+});
+
+test('a 200 that does not confirm the message (a wrong TELEGRAM_API_URL) is not resent and not pinged: exit 4', async () => {
+  const s = secrets();
+  const vendors = await fakeVendors(200, 200, '{"ok":true}');
+  try {
+    const { code, stdout, stderr } = await run(['note', '--fleet', writeFleet()], env(vendors.url, s));
+    assert.equal(code, 4, stderr);
+    assert.equal(vendors.calls.telegram.length, 1);
+    assert.deepEqual(vendors.calls.pings, [], 'a ping would hide a note that never arrived');
+    assert.ok(stderr.includes('check the chat') && stderr.includes('TELEGRAM_API_URL'));
+    assertNoLeak(stdout + stderr, s);
   } finally {
     await vendors.close();
   }

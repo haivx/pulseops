@@ -11,6 +11,10 @@ import { leakForms } from './helpers/leaky-server.ts';
 
 const fakeToken = () => `${100000 + (randomBytes(2).readUInt16BE() % 900000)}:${randomBytes(24).toString('base64url').replace(/[^A-Za-z0-9_-]/g, 'x')}`;
 
+/** Telegram's reply to a sent message: a message id and the chat it went to. */
+const sentReply = (requestBody: string) =>
+  JSON.stringify({ ok: true, result: { message_id: 7, chat: { id: Number((JSON.parse(requestBody) as { chat_id: string }).chat_id) } } });
+
 /** A fake clock: sleep moves it forward instead of waiting. */
 function clock() {
   let t = 0;
@@ -78,7 +82,7 @@ test('sendNote posts plain text with no parse_mode to the bot URL, and an error 
   const token = fakeToken();
   const secret = { name: 'TELEGRAM_BOT_TOKEN', value: token.split(':')[1]! };
   const redact = createRedactor([secret]);
-  const ok = await serve(() => ({ status: 200, body: '{"ok":true,"result":{}}' }));
+  const ok = await serve((_req, body) => ({ status: 200, body: sentReply(body) }));
   try {
     const result = await sendNote({ ...delivery(token, secret.value, ok.url), chatId: '-1001234', text: 'PulseOps, Thu 12 Nov: 1 problem', redact });
     assert.deepEqual(result, { kind: 'delivered', total: 1 });
@@ -159,7 +163,7 @@ test('splitMessage never cuts an emoji (a surrogate pair) in half', () => {
 test('a note sent in several parts marks each part (i/n), and every part stays within 4096 characters', async () => {
   const token = fakeToken();
   const secret = token.split(':')[1]!;
-  const server = await serve(() => ({ status: 200, body: '{"ok":true,"result":{}}' }));
+  const server = await serve((_req, body) => ({ status: 200, body: sentReply(body) }));
   const text = Array.from({ length: 90 }, (_, i) => `line ${i} ${'x'.repeat(90)}`).join('\n');
   try {
     await sendNote({ ...delivery(token, secret, server.url), text });
@@ -216,22 +220,67 @@ test('each Telegram answer becomes one result: token, chat and request refusals,
   }
 });
 
-test('a failure after some parts went out is partial (k of n), never a token or chat refusal', async () => {
+test('a failure after some parts went out is partial (k of n); a refusal keeps its reason and hint, an outage does not', async () => {
   const token = fakeToken();
   const secret = token.split(':')[1]!;
-  for (const failing of [400, 403, 503]) {
+  const cases: [number, string | undefined, number, string | undefined][] = [
+    [400, 'request', 2, 'refused the message'],
+    [403, 'chat', 2, 'TELEGRAM_CHAT_ID'],
+    [503, undefined, 4, undefined],
+  ];
+  for (const [failing, reason, exit, hint] of cases) {
     let call = 0;
-    const server = await serve(() => (++call === 1 ? { status: 200, body: '{"ok":true}' } : { status: failing, body: '{"ok":false}' }));
+    const server = await serve((_req, body) => (++call === 1 ? { status: 200, body: sentReply(body) } : { status: failing, body: '{"ok":false}' }));
     try {
       const result = await sendNote({ ...delivery(token, secret, server.url), text: longNote(3) });
       assert.equal(result.kind, 'partial', `status ${failing}`);
       assert.ok(result.kind === 'partial' && result.sent === 1 && result.total === 3);
+      assert.equal(result.reason, reason, `status ${failing}`);
       const report = deliveryReport(result, { apiUrlOverride: false });
-      assert.equal(report.exit, 4);
-      assert.ok(report.message.includes('1 of 3') && !report.message.includes('TELEGRAM_BOT_TOKEN'));
+      assert.equal(report.exit, exit, `status ${failing}`);
+      assert.ok(report.message.includes('1 of 3'), report.message);
+      assert.ok(report.message.includes('rerun'), 'it warns that a rerun resends the parts already delivered');
+      if (hint !== undefined) assert.ok(report.message.includes(hint) && report.message.includes('fix:'), report.message);
+      else assert.ok(!report.message.includes('fix:'), report.message);
     } finally {
       await server.close();
     }
+  }
+});
+
+test('a 2xx that does not confirm the message counts as sent and is never retried', async () => {
+  const token = fakeToken();
+  const secret = token.split(':')[1]!;
+  const unconfirmed: [string, (body: string) => string][] = [
+    ['cut-off JSON', () => '{"ok":tru'],
+    ['empty body', () => ''],
+    ['ok without a result', () => '{"ok":true}'],
+    ['a message id that is not a whole number', () => '{"ok":true,"result":{"message_id":"7","chat":{"id":1}}}'],
+    ['another chat', () => '{"ok":true,"result":{"message_id":7,"chat":{"id":2}}}'],
+    ['ok false', () => '{"ok":false}'],
+  ];
+  for (const [label, reply] of unconfirmed) {
+    const server = await serve((_req, body) => ({ status: 200, body: reply(body) }));
+    try {
+      const result = await sendNote(delivery(token, secret, server.url));
+      assert.deepEqual(result, { kind: 'unconfirmed', sent: 1, unconfirmed: 1, total: 1 }, label);
+      assert.equal(server.calls.length, 1, `${label}: retried after a 2xx`);
+    } finally {
+      await server.close();
+    }
+  }
+  // In a 3-part note an unconfirmed part 2 is not resent, and part 3 still goes out.
+  let call = 0;
+  const server = await serve((_req, body) => ({ status: 200, body: ++call === 2 ? '' : sentReply(body) }));
+  try {
+    const result = await sendNote({ ...delivery(token, secret, server.url), text: longNote(3) });
+    assert.deepEqual(result, { kind: 'unconfirmed', sent: 3, unconfirmed: 1, total: 3 });
+    assert.equal(server.calls.length, 3);
+    const report = deliveryReport(result, { apiUrlOverride: true });
+    assert.equal(report.exit, 4);
+    assert.ok(report.message.includes('check the chat') && report.message.includes('TELEGRAM_API_URL'), report.message);
+  } finally {
+    await server.close();
   }
 });
 
@@ -263,6 +312,8 @@ test('one table maps every result to an exit code and a fixed message', () => {
     [{ kind: 'refused', reason: 'redirect', cause }, 2, 'TELEGRAM_API_URL'],
     [{ kind: 'unavailable', cause }, 4, 'not delivered'],
     [{ kind: 'partial', sent: 1, total: 3, cause }, 4, '1 of 3'],
+    [{ kind: 'partial', sent: 1, total: 3, cause, reason: 'token' }, 2, 'TELEGRAM_BOT_TOKEN'],
+    [{ kind: 'unconfirmed', sent: 2, unconfirmed: 1, total: 2 }, 4, 'check the chat'],
     [{ kind: 'over-budget', sent: 0, total: 2 }, 4, 'time'],
   ];
   for (const [result, exit, phrase] of rows) {
