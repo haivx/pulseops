@@ -64,7 +64,8 @@ export class VendorHttpError extends Error {
   }
 }
 
-const TIMEOUT_MS = 10_000;
+/** How long one vendor request may take. */
+export const VENDOR_TIMEOUT_MS = 10_000;
 
 /**
  * For a 3xx, only whether the Location points to the same origin, another
@@ -113,7 +114,7 @@ async function send(method: 'GET' | 'POST', url: string, init: { headers?: Recor
   const shown = redact(url);
   let response: Response;
   try {
-    response = await fetch(url, { method, headers: init.headers, body: init.body, redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) });
+    response = await fetch(url, { method, headers: init.headers, body: init.body, redirect: 'manual', signal: AbortSignal.timeout(VENDOR_TIMEOUT_MS) });
   } catch (cause) {
     throw new VendorHttpError('E_VENDOR_UNREACHABLE', `pulseops E_VENDOR_UNREACHABLE: ${method} ${shown} failed before a response`, { url: shown, cause });
   }

@@ -164,7 +164,7 @@ test('a chat id that is not a number exits 2 before anything is sent', async () 
   }
 });
 
-test('a Telegram 4xx (bad token, wrong chat, bot blocked) is a config error: exit 2 with a fix, one try, no ping', async () => {
+test('a Telegram 401 (bad token) exits 2 naming the token, after one try, with no ping', async () => {
   const s = secrets();
   const vendors = await fakeVendors(401);
   try {
@@ -172,8 +172,35 @@ test('a Telegram 4xx (bad token, wrong chat, bot blocked) is a config error: exi
     assert.equal(code, 2, stderr);
     assert.equal(vendors.calls.telegram.length, 1);
     assert.deepEqual(vendors.calls.pings, []);
-    assert.ok(stderr.includes('TELEGRAM_BOT_TOKEN') && stderr.includes('TELEGRAM_CHAT_ID') && stderr.includes('fix:'));
+    assert.ok(stderr.includes('TELEGRAM_BOT_TOKEN') && stderr.includes('fix:'));
     assertNoLeak(stdout + stderr, s);
+  } finally {
+    await vendors.close();
+  }
+});
+
+test('a Telegram 403 (bot blocked or not in the chat) exits 2 naming the chat id', async () => {
+  const s = secrets();
+  const vendors = await fakeVendors(403);
+  try {
+    const { code, stdout, stderr } = await run(['note', '--fleet', writeFleet()], env(vendors.url, s));
+    assert.equal(code, 2, stderr);
+    assert.equal(vendors.calls.telegram.length, 1);
+    assert.ok(stderr.includes('TELEGRAM_CHAT_ID') && stderr.includes('fix:'));
+    assertNoLeak(stdout + stderr, s);
+  } finally {
+    await vendors.close();
+  }
+});
+
+test('a Telegram 408 is temporary: retried 3 times, then exit 4, not a config error', async () => {
+  const s = secrets();
+  const vendors = await fakeVendors(408);
+  try {
+    const { code, stderr } = await run(['note', '--fleet', writeFleet()], env(vendors.url, s));
+    assert.equal(code, 4, stderr);
+    assert.equal(vendors.calls.telegram.length, 3);
+    assert.ok(!stderr.includes('fix:'));
   } finally {
     await vendors.close();
   }
@@ -192,14 +219,15 @@ test('a ping UUID that is not a UUID exits 2 before anything is sent', async () 
   }
 });
 
-test('a ping answered with 404 (an unknown check) exits 2 with a fix, after the note was delivered', async () => {
+test('a ping answered with 404 (an unknown check) logs an error with a fix but exits 0, since the note arrived', async () => {
   const s = secrets();
   const vendors = await fakeVendors(200, 404);
   try {
     const { code, stdout, stderr } = await run(['note', '--fleet', writeFleet()], env(vendors.url, s));
-    assert.equal(code, 2, stderr);
+    assert.equal(code, 0, stderr);
     assert.equal(vendors.calls.telegram.length, 1);
-    assert.ok(stderr.includes('HEALTHCHECKS_PING_UUID') && stderr.includes('fix:'));
+    assert.equal(vendors.calls.pings.length, 1, 'one ping, not retried');
+    assert.ok(stderr.includes('"level":"error"') && stderr.includes('HEALTHCHECKS_PING_UUID') && stderr.includes('fix:'));
     assertNoLeak(stdout + stderr, s);
   } finally {
     await vendors.close();

@@ -17,4 +17,9 @@ Status: design approved. Built so far: the API-key guard (see [the secrets rule]
 3. `npm run pulseops -- note --dry-run` prints the note; `npm run pulseops -- note` sends it and pings the note job's check.
 4. Schedule `note` once a day, with automatic restart off: a rerun sends a second note, since there is no once-per-day claim yet. Give the note job's healthchecks.io check a grace period of at least 3 minutes, so a run that is still retrying is not reported as missed.
 
-Exit codes: `0` sent (a failed ping after delivery is only a warning), `2` a config problem to fix (missing or malformed settings, or Telegram or healthchecks.io refused the token, chat id or ping UUID), `4` Telegram or healthchecks.io was unreachable or failing after the retries.
+Exit codes:
+- `0`: the note was sent. If the healthchecks.io ping fails afterwards, the run still exits 0: a refused ping (a wrong `HEALTHCHECKS_PING_UUID`) is logged as an error with a fix, an outage as a warning, and the missed ping raises its own alert.
+- `2`: a setting to fix. Either something is missing or malformed, or Telegram refused the token (401/404), the chat (403) or the message (other 4xx). The log line names the setting.
+- `4`: try again later; no setting is wrong. Telegram was unreachable or failing after 3 tries (5xx, 408, 429), failed after some parts had gone out ("k of n parts"), or the send ran out of its 90-second budget.
+
+A whole run takes at most about 110 seconds (90 s to send, plus one request each for the healthchecks.io read and the ping), so a `timeout 120` watchdog will not cut it short.
