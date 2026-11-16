@@ -255,6 +255,10 @@ test('a real 429 takes its wait from Retry-After when present, else from the bod
     { headers: { 'retry-after': '7' }, body: '{"ok":false,"parameters":{"retry_after":5}}', expected: 7 },
     { headers: { 'retry-after': '' }, body: '{"ok":false,"parameters":{"retry_after":3}}', expected: 3 },
     { headers: {}, body: 'not json', expected: undefined },
+    // Value: protects=a Retry-After that is an HTTP date (allowed by RFC 9110) is not read as a number and the body value is used;
+    // fails_when=the header guard returns the parsed header unchecked, or a NaN header is read as 0, so a date header beats the body's value; why_new=every header row is numeric or blank;
+    // seam=none; no_claim=Telegram sending such a header (local server; parsing only)
+    { headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' }, body: '{"ok":false,"parameters":{"retry_after":4}}', expected: 4 },
   ];
   for (const { headers, body, expected } of cases) {
     const server = createServer((_req, res) => {

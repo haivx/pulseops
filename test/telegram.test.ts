@@ -123,6 +123,32 @@ test('retries: 5xx and unreachable are retried up to 3 tries, 429 waits retry_af
     if (calls < 3) throw fail('E_VENDOR_HTTP', 502);
   }, sleep);
   assert.equal(calls, 3);
+  // Value: protects=without a retry_after the waits are the design's 1 s then 2 s, and a retry_after under the cap is used as given;
+  // fails_when=the backoff table, its index or the seconds-to-ms step changes; why_new=only the 30 s cap was asserted, never a plain wait;
+  // seam=none; no_claim=real timers (fake sleep records the waits)
+  assert.deepEqual(waits, [1000, 2000], 'a temporary error waits 1 s, then 2 s');
+  calls = 0;
+  waits.length = 0;
+  await withRetries(async () => {
+    calls += 1;
+    if (calls === 1) throw fail('E_VENDOR_HTTP', 429, 5);
+  }, sleep);
+  assert.deepEqual(waits, [5000], 'a retry_after under the cap is waited as given');
+
+  // Value: protects=an error that is not a vendor error (a bug) is thrown at once and never retried, so a bug after an accepted send cannot resend it;
+  // fails_when=the VendorHttpError guard in withRetries is dropped, since isTemporary reads any non-HTTP code as temporary; why_new=every
+  // retries case throws a VendorHttpError; seam=none; no_claim=sendNote's own rethrow (withRetries only)
+  calls = 0;
+  waits.length = 0;
+  await assert.rejects(
+    withRetries(async () => {
+      calls += 1;
+      throw new TypeError('a bug');
+    }, sleep),
+    TypeError,
+  );
+  assert.equal(calls, 1, 'a bug was retried');
+  assert.deepEqual(waits, []);
 
   calls = 0;
   waits.length = 0;

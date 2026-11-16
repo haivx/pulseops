@@ -257,3 +257,46 @@ test('an unknown command says so, without asking for the Telegram settings', asy
   assert.ok(stderr.includes('unknown command'));
   assert.ok(!stderr.includes('TELEGRAM_BOT_TOKEN'), 'it asked for Telegram settings first');
 });
+
+// Value: protects=an insecure TELEGRAM_API_URL or HEALTHCHECKS_PING_URL_BASE (http to another host) exits 2 before any request, so the token and UUID never leave;
+// fails_when=cli.ts reads either override without vendorBaseUrl, or checks it only after the send; why_new=the CLI refusal test covers HEALTHCHECKS_API_URL only;
+// seam=none; no_claim=each refused URL shape (vendorBaseUrl unit tests own those; a local server catches any request)
+test('an insecure Telegram or ping base URL exits 2 before any request, so no key leaves', async () => {
+  for (const variable of ['TELEGRAM_API_URL', 'HEALTHCHECKS_PING_URL_BASE']) {
+    const s = secrets();
+    const vendors = await fakeVendors(200);
+    try {
+      const { code, stdout, stderr } = await run(['note', '--fleet', writeFleet()], { ...env(vendors.url, s), [variable]: 'http://example.com' });
+      assert.equal(code, 2, `${variable}: ${stderr}`);
+      assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes(variable), stderr);
+      assert.equal(vendors.calls.checks, 0, `${variable}: healthchecks.io was read`);
+      assert.equal(vendors.calls.telegram.length, 0, `${variable}: a message was sent`);
+      assert.deepEqual(vendors.calls.pings, [], `${variable}: a ping was sent`);
+      assertNoLeak(stdout + stderr, s);
+    } finally {
+      await vendors.close();
+    }
+  }
+});
+
+// Value: protects=a note whose text holds a key (here a fleet check name) is never posted to Telegram: exit 1, no send, no ping, no key in the log;
+// fails_when=the assertNoSecrets call before sendNote is removed or moved after it; why_new=secrets.test covers assertNoSecrets alone, never the send path;
+// seam=none; no_claim=how a key could reach a real note (a fleet name stands in for any source of note text)
+test('a note that carries a key is never sent: exit 1, no Telegram call, no ping', async () => {
+  const s = secrets();
+  const dir = mkdtempSync(join(tmpdir(), 'pulseops-fleet-'));
+  const fleet = join(dir, 'fleet.yaml');
+  // A check missing from healthchecks.io is a problem, and a problem line names the check.
+  writeFileSync(fleet, `timezone: UTC\napps:\n  - name: app-1\n    checks:\n      - name: worker\n        slug: app-1-worker\n      - name: ${s.botSecret}\n        slug: app-1-ghost\n`);
+  const vendors = await fakeVendors(200);
+  try {
+    const { code, stdout, stderr } = await run(['note', '--fleet', fleet], env(vendors.url, s));
+    assert.equal(code, 1, stderr);
+    assert.ok(stderr.includes('E_SECRET_IN_OUTPUT') && stderr.includes('TELEGRAM_BOT_TOKEN'), stderr);
+    assert.equal(vendors.calls.telegram.length, 0, 'the note was sent');
+    assert.deepEqual(vendors.calls.pings, []);
+    assertNoLeak(stdout + stderr, s);
+  } finally {
+    await vendors.close();
+  }
+});
