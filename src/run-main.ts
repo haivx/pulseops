@@ -2,9 +2,13 @@ import { createLogger, type Logger } from './log.ts';
 import { formatError } from './format-error.ts';
 import { createRedactor, readSecret, SecretError, type Secret } from './secrets.ts';
 
-/** Exit codes from the plan: 1 unexpected failure, 2 usage or validation error. */
+/** Exit codes from the plan: 1 unexpected failure, 2 usage or validation error, 4 a dependency is unavailable. */
 export const EXIT_FAILURE = 1;
 export const EXIT_USAGE = 2;
+export const EXIT_DEPENDENCY = 4;
+
+/** A key to read: an environment variable name, or a reader for a compound credential. */
+export type SecretSource = string | ((env: Record<string, string | undefined>) => Secret);
 
 /** How long a failing run waits for stderr to flush before it exits anyway. */
 const EXIT_FLUSH_LIMIT_MS = 2000;
@@ -16,7 +20,8 @@ export type CommandContext = { secrets: Secret[]; log: Logger; redact: (text: st
 
 /**
  * Entry point for every PulseOps command. Reads the named keys from the
- * environment. Everything written through the `log` it passes in, and every
+ * environment; a compound credential (such as a Telegram bot token) brings its
+ * own reader that returns only its secret part. Everything written through the `log` it passes in, and every
  * error the command throws or leaves uncaught, goes through redaction. Direct
  * `console` or `process.stdout` writes do not: a command may write its output
  * to stdout only after that output has passed `assertNoSecrets`.
@@ -26,12 +31,12 @@ export type CommandContext = { secrets: Secret[]; log: Logger; redact: (text: st
  * open, so a scheduled run never hangs. A missing or invalid key sets exit
  * code 2 before the command runs.
  */
-export async function runMain(secretNames: string[], command: (context: CommandContext) => Promise<void>): Promise<void> {
+export async function runMain(sources: SecretSource[], command: (context: CommandContext) => Promise<void>): Promise<void> {
   const secrets: Secret[] = [];
   const configErrors: SecretError[] = [];
-  for (const name of secretNames) {
+  for (const source of sources) {
     try {
-      secrets.push(readSecret(process.env, name));
+      secrets.push(typeof source === 'string' ? readSecret(process.env, source) : source(process.env));
     } catch (error) {
       if (error instanceof SecretError) configErrors.push(error);
       else throw error;

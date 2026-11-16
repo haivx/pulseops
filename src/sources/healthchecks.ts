@@ -1,37 +1,14 @@
-import { ConfigError } from '../config-error.ts';
 import type { Logger } from '../log.ts';
 import { formatError } from '../format-error.ts';
-import { getJson, VendorHttpError } from '../vendor-http.ts';
+import { getJson, vendorBaseUrl, VendorHttpError } from '../vendor-http.ts';
 
 export const HEALTHCHECKS_DEFAULT_URL = 'https://healthchecks.io';
 
 /** The statuses healthchecks.io documents. Anything else is never printed. */
 const KNOWN_STATUSES = new Set(['new', 'up', 'grace', 'down', 'paused', 'started']);
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
-
-/**
- * The API base URL, from HEALTHCHECKS_API_URL for a self-hosted instance or a
- * test server. The key is sent there, so only https is accepted, or http to
- * this machine. Credentials in the URL are refused, because they would print.
- */
+/** The API base URL, from HEALTHCHECKS_API_URL for a self-hosted instance or a test server. */
 export function healthchecksBaseUrl(override: string | undefined): string {
-  if (override === undefined || override === '') return HEALTHCHECKS_DEFAULT_URL;
-  const refuse = () =>
-    new ConfigError(
-      'pulseops E_CONFIG_INVALID: HEALTHCHECKS_API_URL must be an https URL, or http to localhost, with no user, password, query or fragment; fix: correct it or unset it to use https://healthchecks.io',
-    );
-  let url: URL;
-  try {
-    url = new URL(override);
-  } catch {
-    throw refuse();
-  }
-  const secure = url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
-  // A query, fragment or stray whitespace would send the request to a wrong
-  // path, which reads as a daily outage instead of a config error.
-  const clean = override.trim() === override && url.search === '' && url.hash === '';
-  if (!secure || !clean || url.username !== '' || url.password !== '') throw refuse();
-  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  return vendorBaseUrl('HEALTHCHECKS_API_URL', override, HEALTHCHECKS_DEFAULT_URL);
 }
 
 /**

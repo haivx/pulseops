@@ -1,3 +1,4 @@
+import { ConfigError } from './config-error.ts';
 import { readField, registerFields, safeClassName } from './error-fields.ts';
 
 export type Redirect = 'same-origin' | 'cross-origin' | 'invalid';
@@ -34,10 +35,12 @@ export class VendorHttpError extends Error {
   readonly url: string | undefined;
   /** For a 3xx: where the Location points, as a fixed value. */
   readonly redirect: Redirect | undefined;
+  /** For a 429: the seconds the vendor asked to wait, if it gave a number. */
+  readonly retryAfter: number | undefined;
   constructor(
     code: VendorHttpError['code'],
     message: string,
-    options: { status?: number; url?: string; redirect?: Redirect; cause?: unknown } = {},
+    options: { status?: number; url?: string; redirect?: Redirect; retryAfter?: number; cause?: unknown } = {},
   ) {
     super(message, { cause: options.cause });
     this.name = 'VendorHttpError';
@@ -45,6 +48,7 @@ export class VendorHttpError extends Error {
     this.status = options.status;
     this.url = options.url;
     this.redirect = options.redirect;
+    this.retryAfter = options.retryAfter;
     // The cause comes from a library: only its class and an allowlisted code are kept, read now.
     const hasCause = readField(() => options.cause instanceof Error) === true;
     registerFields(this, {
@@ -60,7 +64,8 @@ export class VendorHttpError extends Error {
   }
 }
 
-const TIMEOUT_MS = 10_000;
+/** How long one vendor request may take. */
+export const VENDOR_TIMEOUT_MS = 10_000;
 
 /**
  * For a 3xx, only whether the Location points to the same origin, another
@@ -78,51 +83,112 @@ function redirectKind(response: Response, url: string): Redirect | undefined {
   }
 }
 
+/** Seconds to wait from a 429: the Retry-After header, else Telegram's `parameters.retry_after`; a number only. */
+function retryAfterSeconds(response: Response, body: string): number | undefined {
+  // Number(null) and Number('') are 0, so an absent or blank header must not be read as "wait 0".
+  const raw = response.headers.get('retry-after')?.trim();
+  if (raw !== undefined && raw !== '') {
+    const header = Number(raw);
+    if (Number.isFinite(header) && header >= 0) return header;
+  }
+  try {
+    const value = (JSON.parse(body) as { parameters?: { retry_after?: unknown } }).parameters?.retry_after;
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * GET a vendor JSON endpoint. Errors keep the redacted URL and the status,
- * which explain the failure, and never the vendor's body. The cause of an
+ * One request to a vendor, shared by every call. It never follows a
+ * redirect: on a cross-origin redirect fetch drops only Authorization, and a
+ * key in a custom header or in the URL would go to the new host. Errors keep
+ * the redacted URL and the status, never the vendor's body. The cause of an
  * unreachable vendor is kept for code that inspects it, but `formatError`
- * never writes it.
+ * writes only its class and an allowlisted code. On success it returns the
+ * body text.
  */
-export async function getJson(url: string, headers: Record<string, string>, redact: (text: string) => string): Promise<unknown> {
+async function send(method: 'GET' | 'POST', url: string, init: { headers?: Record<string, string>; body?: string }, redact: (text: string) => string): Promise<string> {
   // Messages carry the URL redacted, so a message saved or sent on later
   // holds no key even if it skips the logger.
   const shown = redact(url);
   let response: Response;
   try {
-    // Never follow redirects: on a cross-origin redirect fetch drops only
-    // Authorization, and custom key headers such as X-Api-Key would go to the
-    // new host. A 3xx is not ok, so it fails below as E_VENDOR_HTTP.
-    response = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(TIMEOUT_MS) });
+    response = await fetch(url, { method, headers: init.headers, body: init.body, redirect: 'manual', signal: AbortSignal.timeout(VENDOR_TIMEOUT_MS) });
   } catch (cause) {
-    throw new VendorHttpError('E_VENDOR_UNREACHABLE', `pulseops E_VENDOR_UNREACHABLE: GET ${shown} failed before a response`, { url: shown, cause });
+    throw new VendorHttpError('E_VENDOR_UNREACHABLE', `pulseops E_VENDOR_UNREACHABLE: ${method} ${shown} failed before a response`, { url: shown, cause });
   }
   if (!response.ok) {
-    // The body is vendor text: it is read only to free the connection, never kept.
-    await response.text().catch(() => '');
-    throw new VendorHttpError('E_VENDOR_HTTP', `pulseops E_VENDOR_HTTP: GET ${shown} returned ${response.status}`, {
+    // The body is vendor text: read only to free the connection and, for a
+    // 429, to take one number out of it. It is never kept.
+    const body = await response.text().catch(() => '');
+    throw new VendorHttpError('E_VENDOR_HTTP', `pulseops E_VENDOR_HTTP: ${method} ${shown} returned ${response.status}`, {
       status: response.status,
       url: shown,
       redirect: redirectKind(response, url),
+      retryAfter: response.status === 429 ? retryAfterSeconds(response, body) : undefined,
     });
   }
-  let body: string;
   try {
-    body = await response.text();
+    return await response.text();
   } catch (cause) {
-    throw new VendorHttpError('E_VENDOR_UNREACHABLE', `pulseops E_VENDOR_UNREACHABLE: GET ${shown} failed while reading the body`, {
+    throw new VendorHttpError('E_VENDOR_UNREACHABLE', `pulseops E_VENDOR_UNREACHABLE: ${method} ${shown} failed while reading the body`, {
       status: response.status,
       url: shown,
       cause,
     });
   }
+}
+
+function parseJson(text: string, method: string, url: string, redact: (text: string) => string): unknown {
   try {
-    return JSON.parse(body);
+    return JSON.parse(text);
   } catch {
     // JSON.parse quotes part of the body in its message, so the cause is dropped.
-    throw new VendorHttpError('E_VENDOR_BAD_JSON', `pulseops E_VENDOR_BAD_JSON: GET ${shown} returned ${response.status} with a body that is not JSON`, {
-      status: response.status,
-      url: shown,
-    });
+    const shown = redact(url);
+    throw new VendorHttpError('E_VENDOR_BAD_JSON', `pulseops E_VENDOR_BAD_JSON: ${method} ${shown} returned a body that is not JSON`, { url: shown });
   }
+}
+
+/** GET a vendor JSON endpoint. */
+export async function getJson(url: string, headers: Record<string, string>, redact: (text: string) => string): Promise<unknown> {
+  return parseJson(await send('GET', url, { headers }, redact), 'GET', url, redact);
+}
+
+/** POST JSON to a vendor endpoint and parse the JSON reply. */
+export async function postJson(url: string, body: unknown, redact: (text: string) => string): Promise<unknown> {
+  const text = await send('POST', url, { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, redact);
+  return parseJson(text, 'POST', url, redact);
+}
+
+/** GET an endpoint whose reply body does not matter, such as a healthchecks.io ping. */
+export async function getOk(url: string, redact: (text: string) => string): Promise<void> {
+  await send('GET', url, {}, redact);
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * A vendor base URL, from an environment override for a self-hosted instance
+ * or a test server. A key goes there, so only https is accepted, or http to
+ * this machine, with no user, password, query or fragment.
+ */
+export function vendorBaseUrl(variable: string, override: string | undefined, fallback: string): string {
+  if (override === undefined || override === '') return fallback;
+  const refuse = () =>
+    new ConfigError(
+      `pulseops E_CONFIG_INVALID: ${variable} must be an https URL, or http to localhost, with no user, password, query or fragment; fix: correct it or unset it to use ${fallback}`,
+    );
+  let url: URL;
+  try {
+    url = new URL(override);
+  } catch {
+    throw refuse();
+  }
+  const secure = url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
+  // A query, fragment or stray whitespace would send the request to a wrong
+  // path, which reads as a daily outage instead of a config error.
+  const clean = override.trim() === override && url.search === '' && url.hash === '';
+  if (!secure || !clean || url.username !== '' || url.password !== '') throw refuse();
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }

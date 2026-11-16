@@ -16,17 +16,39 @@
 
 ## Note
 
-### Send the note to Telegram
+### Telegram send: follow-ups from the third review round
 
-**What:** `pulseops note` (without `--dry-run`) sends the rendered note as a Telegram bot message to the owner's chat.
+**What:** Left from the `feat/telegram-send` review of the typed delivery result, deferred by the owner (only the duplicate-send, false-delivery and partial-refusal findings were fixed):
+1. The send budget runs on `Date.now()` (`src/cli.ts`, `now`). A clock stepped back (NTP, VM resume) stretches it; one probe sent 300 parts over about 3000 s. Use `performance.now()`.
+2. `splitMessage` (`src/telegram.ts`) can produce a part that is only blank space plus its "(i/n)" marker, for example 29 newlines. Drop or merge parts where `part.trim() === ''`.
+3. Two assertions in `test/telegram.test.ts` ("sending stops within the time budget") check nothing: the fake clock moves only in sleeps, so deleting the pre-try check still passes, and the watchdog line sums constants. Make the fake request take 10 s on the clock and assert the deadline is never crossed, with an all-503 case that stops at the try check.
+4. Docs: README has no exit `1` (a bug, or `assertNoSecrets` stopping a send; no ping, so the note check alerts). `docs/designs/pulseops-daily-note.md` still says sending is not built (line 329), its exit table gives 2 only as a usage error, and step 2 says "retry on a failure" without saying 4xx is not retried.
 
-**Why:** The owner chose Telegram as the delivery channel (open question 1, 2026-11-12). Until this lands the note only prints.
+5. From the last round: `telegramChatId` (`src/telegram.ts`) accepts `^-?\d{1,20}$`, so a chat id with a leading zero (`0123`, `-0100…`) passes, but Telegram's reply names `123` and `confirms()` never matches: every run ends `unconfirmed` (exit 4, daily alert) while the note arrives. Tighten to `^-?[1-9]\d{0,19}$`.
+6. From the last round: `partial` and `over-budget` drop the unconfirmed count. After an unconfirmed part, a later refusal or timeout reports "k parts went out" with no `parts_unconfirmed` field or "check the chat" hint (a later 401 even blames the token when the API URL is wrong). Still non-zero with no ping, so nothing is lost. Carry `unconfirmed` on both results and print it.
+7. From the `/ship` review: the override hints in `src/cli.ts` test `process.env.TELEGRAM_API_URL !== undefined` (and the same for `HEALTHCHECKS_PING_URL_BASE`), but `vendorBaseUrl` treats an empty value as unset. So `TELEGRAM_API_URL=` gets a false "is set: check it too" hint. Use the same rule as `vendorBaseUrl`.
+8. From the `/ship` review: a wrong override that fails at the network or 5xx level (typo host, TLS error, proxy 502) ends `unavailable` / `partial` / `over-budget`, exit 4, "no setting is wrong", with no override hint; the ping's warn branch has the same gap. Add the hint when the override is set.
+9. From the `/ship` review: `UUID_SHAPE` in `src/telegram.ts` has the `/i` flag, so an uppercase `HEALTHCHECKS_PING_UUID` passes the startup check. If healthchecks.io only routes lowercase UUIDs (not checked against the live service), every ping 404s and the note check alerts daily. Check, then drop `/i` (never lowercase silently).
+10. From the `/ship` review: the ping after delivery is tried once (`src/cli.ts`). One network failure or 5xx gives a false "missed" alert on a day the note arrived. Consider one retry with its own small deadline inside the 120 s watchdog.
+11. From the `/ship` review (owner chose to ship first): `test/telegram.test.ts` ("the ping UUID must look like a UUID") commits a fixed UUID, the public RFC example, against the CLAUDE.md rule "Never commit a key-shaped string". Build it with `randomUUID()` and derive the bad cases from it, as `test/send.e2e.test.ts` does.
 
-**Context:** Read the bot token and chat id with `readSecret`, call `assertNoSecrets(note, secrets, 'Telegram message')` before sending, and send through a redacting HTTP call (the bot token is part of Telegram's URL, so it must be one of the redactor's secrets). Retry delivery up to 3 times with backoff, as in "Run once per day" step 2, then ping healthchecks.io only after delivery.
+**Why:** None sends a duplicate, hides a missing note or leaks a key; item 1 can outlast a `timeout 120` watchdog only after a clock jump, and items 5, 7, 8 and 9 only misfire on a mistyped setting.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
+### Once-per-day claim and `--resend`
+
+**What:** Design step 6 ("Run once per day"): before sending, `note` claims today's date in a store. If the claim is held, it exits 3 without sending. `--resend` skips the claim on purpose.
+
+**Why:** Today a rerun or a scheduler restart sends a second note. The README says to run it once a day with restart off until this ships.
+
+**Context:** The claim needs Postgres or a host store, which arrive with the scheduler. The design's `note_runs(day, claimed_at, sent_at)` table, with a unique key on `day`, is the claim. Exit code 3 (claim held) is unused so far; `src/run-main.ts` goes from 2 to 4.
 
 **Effort:** S
 **Priority:** P1
-**Depends on:** `pulseops note --dry-run`
+**Depends on:** The scheduler and its store
 
 ### Subscription price history
 
@@ -124,6 +146,7 @@
 1. Overlapping `runMain` calls share one fail handler and its redactor; make a second call in one process throw, with a test.
 2. Doc drift: the `runMain` docstring should state the Linux full-pipe exception; rename the fleet test that now covers a blank slug.
 3. Deploy: on Linux a full stderr pipe blocks before the 2-second exit timer can run, so the scheduler must wrap the note job in a watchdog (for example `timeout 120 pulseops note`).
+4. `send()` in `src/vendor-http.ts` reads the whole vendor body with `response.text()`, with no size cap. Cap it (for example 1 MB, then abort) so a broken vendor or a wrong base URL cannot fill memory.
 
 **Why:** None leaks a key in the current flow.
 
@@ -218,3 +241,7 @@
 ### Logger takes typed fields, not objects
 
 **Completed:** `feat/typed-logger` (2026-11-12). Log fields are `string | number | boolean` only, an error becomes fields only through `formatError` (class, `E_*` code, status, redacted URL; never a library's message or stack, never a vendor body), `assertNoSecrets` takes only the final string, and `src/serialize.ts` is deleted.
+
+### Send the note to Telegram
+
+**Completed:** `feat/telegram-send` (2026-11-13). `pulseops note` sends the note as plain text to the owner's chat, retries up to 3 tries (5xx, unreachable, 429 with its `retry_after` capped at 30 seconds), exits 4 if delivery fails, and pings the note job's healthchecks.io check only after delivery.

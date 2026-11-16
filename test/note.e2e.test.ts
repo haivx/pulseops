@@ -90,12 +90,6 @@ test('a missing key exits 2 and names the variable', async () => {
   assert.ok(stderr.includes('E_CONFIG_MISSING') && stderr.includes('HEALTHCHECKS_API_KEY'));
 });
 
-test('note without --dry-run exits 2, because sending is not built yet', async () => {
-  const { code, stderr } = await run(['note', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: fakeKey('hcr') });
-  assert.equal(code, 2);
-  assert.ok(stderr.includes('E_USAGE') && stderr.includes('--dry-run'));
-});
-
 test('a bad fleet file exits 2 with the problem and its fix', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pulseops-fleet-'));
   const path = join(dir, 'fleet.yaml');
