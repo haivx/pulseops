@@ -14,11 +14,11 @@ const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 function writeFleet(): string {
   const dir = mkdtempSync(join(tmpdir(), 'pulseops-fleet-'));
   const path = join(dir, 'fleet.yaml');
-  writeFileSync(path, 'timezone: UTC\napps:\n  - name: app-1\n    checks:\n      - name: worker\n        slug: app-1-worker\n');
+  writeFileSync(path, 'timezone: UTC\napps:\n  - name: app-1\n    monitor: "101"\n    checks:\n      - name: worker\n        slug: app-1-worker\n');
   return path;
 }
 
-/** One fake for all three vendors: healthchecks.io checks, Telegram sendMessage and the ping endpoint. */
+/** One fake for all four vendors: healthchecks.io checks, Better Stack, Telegram sendMessage and the ping endpoint. */
 async function fakeVendors(telegramStatus: number, pingStatus = 200, telegramReply?: string) {
   const calls = { checks: 0, telegram: [] as string[], pings: [] as string[] };
   const server = createServer((req, res) => {
@@ -26,7 +26,13 @@ async function fakeVendors(telegramStatus: number, pingStatus = 200, telegramRep
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
       const url = req.url ?? '';
-      if (url.startsWith('/api/v3/checks/')) {
+      if (url.startsWith('/api/v2/monitors/')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: { id: '101', type: 'monitor', attributes: { status: 'up' } } }));
+      } else if (url.startsWith('/api/v3/incidents')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [], pagination: { next: null } }));
+      } else if (url.startsWith('/api/v3/checks/')) {
         calls.checks += 1;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ checks: [{ slug: 'app-1-worker', status: 'up' }] }));
@@ -66,13 +72,15 @@ function run(args: string[], env: Record<string, string>): Promise<{ code: numbe
 
 function secrets() {
   const botSecret = randomBytes(24).toString('hex');
-  return { token: `987654:${botSecret}`, botSecret, uuid: randomUUID(), key: fakeKey('hcr') };
+  return { token: `987654:${botSecret}`, botSecret, uuid: randomUUID(), key: fakeKey('hcr'), bst: fakeKey('bst') };
 }
 
 function env(vendors: string, s: ReturnType<typeof secrets>): Record<string, string> {
   return {
     HEALTHCHECKS_API_KEY: s.key,
     HEALTHCHECKS_API_URL: vendors,
+    BETTERSTACK_API_TOKEN: s.bst,
+    BETTERSTACK_API_URL: vendors,
     TELEGRAM_BOT_TOKEN: s.token,
     TELEGRAM_CHAT_ID: '-1001234567',
     TELEGRAM_API_URL: vendors,
@@ -82,7 +90,7 @@ function env(vendors: string, s: ReturnType<typeof secrets>): Record<string, str
 }
 
 function assertNoLeak(output: string, s: ReturnType<typeof secrets>) {
-  for (const value of [s.key, s.botSecret, s.uuid]) {
+  for (const value of [s.key, s.bst, s.botSecret, s.uuid]) {
     for (const form of leakForms(value)) assert.ok(!output.includes(form), 'a form of a secret reached the output');
   }
 }
@@ -96,7 +104,8 @@ test('note sends one Telegram message, then pings the note check once, and exits
     assert.equal(vendors.calls.telegram.length, 1);
     const sent = JSON.parse(vendors.calls.telegram[0]!) as Record<string, unknown>;
     assert.equal(sent.chat_id, '-1001234567');
-    assert.match(String(sent.text), /^PulseOps, .*: no problems found\n/);
+    // Both health sources are read and nothing is wrong, so the headline is "all clear".
+    assert.match(String(sent.text), /^PulseOps, .*: all clear\n/);
     assert.equal(sent.parse_mode, undefined);
     assert.deepEqual(vendors.calls.pings, [`/${s.uuid}`]);
     assertNoLeak(stdout + stderr, s);
@@ -134,11 +143,11 @@ test('when the ping fails after delivery, note warns and still exits 0', async (
   }
 });
 
-test('note --dry-run sends nothing and needs only the healthchecks.io key', async () => {
+test('note --dry-run sends nothing and needs only the two read keys (healthchecks.io and Better Stack)', async () => {
   const s = secrets();
   const vendors = await fakeVendors(200);
   try {
-    const { code, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: s.key, HEALTHCHECKS_API_URL: vendors.url });
+    const { code, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: s.key, HEALTHCHECKS_API_URL: vendors.url, BETTERSTACK_API_TOKEN: s.bst, BETTERSTACK_API_URL: vendors.url });
     assert.equal(code, 0, stderr);
     assert.equal(vendors.calls.telegram.length, 0);
     assert.deepEqual(vendors.calls.pings, []);
@@ -148,7 +157,7 @@ test('note --dry-run sends nothing and needs only the healthchecks.io key', asyn
 });
 
 test('note without the Telegram settings exits 2 and names what is missing', async () => {
-  const { code, stderr } = await run(['note', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: fakeKey('hcr') });
+  const { code, stderr } = await run(['note', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: fakeKey('hcr'), BETTERSTACK_API_TOKEN: fakeKey('bst') });
   assert.equal(code, 2);
   assert.ok(stderr.includes('E_CONFIG_MISSING') && stderr.includes('TELEGRAM_BOT_TOKEN'));
 });
@@ -287,7 +296,7 @@ test('a note that carries a key is never sent: exit 1, no Telegram call, no ping
   const dir = mkdtempSync(join(tmpdir(), 'pulseops-fleet-'));
   const fleet = join(dir, 'fleet.yaml');
   // A check missing from healthchecks.io is a problem, and a problem line names the check.
-  writeFileSync(fleet, `timezone: UTC\napps:\n  - name: app-1\n    checks:\n      - name: worker\n        slug: app-1-worker\n      - name: ${s.botSecret}\n        slug: app-1-ghost\n`);
+  writeFileSync(fleet, `timezone: UTC\napps:\n  - name: app-1\n    monitor: "101"\n    checks:\n      - name: worker\n        slug: app-1-worker\n      - name: ${s.botSecret}\n        slug: app-1-ghost\n`);
   const vendors = await fakeVendors(200);
   try {
     const { code, stdout, stderr } = await run(['note', '--fleet', fleet], env(vendors.url, s));

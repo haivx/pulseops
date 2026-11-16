@@ -7,18 +7,21 @@ const valid = `
 timezone: Asia/Saigon
 apps:
   - name: app-1
+    monitor: "101"
     checks:
       - name: worker
         slug: app-1-worker
   - name: site
+    monitor: "102"
 `;
 
-test('a valid fleet file gives the timezone, apps and their checks', () => {
+test('a valid fleet file gives the timezone, apps with their Better Stack monitor, and their checks', () => {
   const fleet = parseFleet(valid);
   assert.equal(fleet.timezone, 'Asia/Saigon');
+  assert.deepEqual(fleet.sources, { betterstack: 'enabled' });
   assert.deepEqual(fleet.apps, [
-    { name: 'app-1', checks: [{ name: 'worker', slug: 'app-1-worker' }] },
-    { name: 'site', checks: [] },
+    { name: 'app-1', monitor: '101', checks: [{ name: 'worker', slug: 'app-1-worker' }] },
+    { name: 'site', monitor: '102', checks: [] },
   ]);
 });
 
@@ -80,6 +83,36 @@ test('an empty or null slug is reported as missing, not as "must be text"', () =
       () => parseFleet(`timezone: UTC\napps:\n  - name: a\n    checks:\n      - { name: w, slug: ${slug} }\n`),
       (error: unknown) => error instanceof FleetError && error.message.includes('slug is missing'),
       slug,
+    );
+  }
+});
+
+test('each app needs its Better Stack monitor ID: digits only, one app per monitor', () => {
+  const cases: [string, string][] = [
+    ['timezone: UTC\napps:\n  - name: a\n', 'apps[0].monitor is missing'],
+    ['timezone: UTC\napps:\n  - name: a\n    monitor: "12/../34"\n', 'apps[0].monitor must be the numeric monitor ID'],
+    ['timezone: UTC\napps:\n  - name: a\n    monitor: 123\n', 'apps[0].monitor must be the numeric monitor ID'],
+    ['timezone: UTC\napps:\n  - name: a\n    monitor: "7"\n  - name: b\n    monitor: "7"\n', 'apps[1].monitor repeats monitor 7 from apps[0]'],
+  ];
+  for (const [text, expected] of cases) {
+    assert.throws(
+      () => parseFleet(text),
+      (error: unknown) => error instanceof FleetError && error.message.includes(expected) && error.message.includes('fix:'),
+      expected,
+    );
+  }
+});
+
+test('sources.betterstack: disabled makes the monitor ID optional; any other value is refused', () => {
+  const off = parseFleet('timezone: UTC\nsources:\n  betterstack: disabled\napps:\n  - name: a\n');
+  assert.deepEqual(off.sources, { betterstack: 'disabled' });
+  assert.deepEqual(off.apps, [{ name: 'a', monitor: undefined, checks: [] }]);
+  assert.equal(parseFleet('timezone: UTC\nsources:\n  betterstack: enabled\napps:\n  - name: a\n    monitor: "1"\n').sources.betterstack, 'enabled');
+  for (const bad of ['sources: nope', 'sources:\n  betterstack: off', 'sources:\n  betterstack: false']) {
+    assert.throws(
+      () => parseFleet(`timezone: UTC\n${bad}\napps:\n  - name: a\n    monitor: "1"\n`),
+      (error: unknown) => error instanceof FleetError && error.message.includes('sources') && error.message.includes('enabled or disabled'),
+      bad,
     );
   }
 });

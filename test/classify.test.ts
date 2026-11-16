@@ -1,18 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classify } from '../src/note/classify.ts';
+import type { MonitorReading } from '../src/sources/betterstack.ts';
 import type { Fleet } from '../src/fleet.ts';
 
 const fleet: Fleet = {
   timezone: 'UTC',
+  sources: { betterstack: 'disabled' },
   apps: [
-    { name: 'app-1', checks: [{ name: 'worker', slug: 's1' }, { name: 'cron', slug: 's2' }] },
-    { name: 'app-2', checks: [{ name: 'job', slug: 's3' }] },
-    { name: 'site', checks: [] },
+    { name: 'app-1', monitor: undefined, checks: [{ name: 'worker', slug: 's1' }, { name: 'cron', slug: 's2' }] },
+    { name: 'app-2', monitor: undefined, checks: [{ name: 'job', slug: 's3' }] },
+    { name: 'site', monitor: undefined, checks: [] },
   ],
 };
 
-const run = (statuses: Record<string, string>) => classify(fleet, new Map(Object.entries(statuses)));
+const now = new Date('2026-11-12T01:00:00Z');
+// The healthchecks.io rules alone: Better Stack is disabled in these fixtures.
+const run = (statuses: Record<string, string>) => classify(fleet, new Map(Object.entries(statuses)), 'disabled', now);
 
 test('up and grace count as reporting; no problems found', () => {
   const result = run({ s1: 'up', s2: 'grace', s3: 'up' });
@@ -44,7 +48,7 @@ test('a new check tells the owner to ping it once', () => {
 });
 
 test('an unavailable source is one problem, however many checks it affects', () => {
-  const result = classify(fleet, 'unavailable');
+  const result = classify(fleet, 'unavailable', 'disabled', now);
   assert.deepEqual(result.problems, ['unknown: healthchecks.io unavailable']);
   assert.equal(result.workers, 'unavailable');
 });
@@ -64,6 +68,66 @@ test('an ambiguous or unexpected status is unknown, with a fix for each', () => 
 });
 
 test('a fleet with apps but no checks is a problem, never a healthy note', () => {
-  const result = classify({ timezone: 'UTC', apps: [{ name: 'site', checks: [] }] }, new Map());
+  const result = classify({ timezone: 'UTC', sources: { betterstack: 'disabled' }, apps: [{ name: 'site', monitor: undefined, checks: [] }] }, new Map(), 'disabled', now);
   assert.deepEqual(result.problems, ["workers: no checks in fleet.yaml. Add the app's checks"]);
+});
+
+const minutesAgo = (m: number) => now.getTime() - m * 60_000;
+const bsFleet: Fleet = {
+  timezone: 'UTC',
+  sources: { betterstack: 'enabled' },
+  apps: [
+    { name: 'app-1', monitor: '1', checks: [{ name: 'worker', slug: 's1' }] },
+    { name: 'site', monitor: '2', checks: [] },
+  ],
+};
+const monitors = (readings: Record<string, MonitorReading>) => new Map(Object.entries(readings));
+const up: MonitorReading = { status: 'up', incidents: [] };
+
+test('Better Stack: an up monitor is no problem; down is one problem with its next action', () => {
+  const ok = classify(bsFleet, new Map([['s1', 'up']]), monitors({ 'app-1': up, site: up }), now);
+  assert.deepEqual(ok.problems, []);
+  assert.deepEqual(ok.apps, [
+    { name: 'app-1', status: 'up', incidents: { count: 0, minutes: 0, ongoing: false } },
+    { name: 'site', status: 'up', incidents: { count: 0, minutes: 0, ongoing: false } },
+  ]);
+  const down = classify(bsFleet, new Map([['s1', 'up']]), monitors({ 'app-1': { status: 'down', incidents: [{ startedAt: minutesAgo(30), resolvedAt: undefined }] }, site: up }), now);
+  assert.deepEqual(down.problems, ['app-1: down. Check the app']);
+  assert.deepEqual((down.apps as { incidents: unknown }[])[0]!.incidents, { count: 1, minutes: 30, ongoing: true });
+});
+
+test('Better Stack: every status outside up and down, a missing monitor and too many incidents are unknown with a fix', () => {
+  const cases: [string, string][] = [
+    ['paused', 'app-1: unknown (paused). Resume the monitor in Better Stack'],
+    ['missing', 'app-1: unknown (missing). Check its monitor ID in fleet.yaml'],
+    ['too-many', 'app-1: unknown (more than 50 incidents). Check it in Better Stack'],
+    ['validating', 'app-1: unknown (validating). Check it in Better Stack'],
+    ['maintenance', 'app-1: unknown (maintenance). Check it in Better Stack'],
+    ['unexpected', 'app-1: unknown (unexpected). Check it in Better Stack'],
+  ];
+  for (const [status, problem] of cases) {
+    const result = classify(bsFleet, new Map([['s1', 'up']]), monitors({ 'app-1': { status, incidents: [] }, site: up }), now);
+    assert.deepEqual(result.problems, [problem], status);
+  }
+  // A reading the source never returned (an app missing from the map) is unknown too, never up.
+  assert.deepEqual(classify(bsFleet, new Map([['s1', 'up']]), monitors({ site: up }), now).problems, ['app-1: unknown (missing). Check its monitor ID in fleet.yaml']);
+});
+
+test('Better Stack: only incidents that started in the last 24 hours count; resolved ones are not problems', () => {
+  const incidents = [
+    { startedAt: minutesAgo(24 * 60 - 1), resolvedAt: minutesAgo(24 * 60 - 5) },
+    { startedAt: minutesAgo(24 * 60 + 1), resolvedAt: minutesAgo(24 * 60 - 10) },
+    // Before midnight UTC and still inside the window.
+    { startedAt: Date.parse('2026-11-11T23:50:00Z'), resolvedAt: Date.parse('2026-11-11T23:58:00Z') },
+    { startedAt: now.getTime() + 60_000, resolvedAt: undefined },
+  ];
+  const result = classify(bsFleet, new Map([['s1', 'up']]), monitors({ 'app-1': { status: 'up', incidents }, site: up }), now);
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual((result.apps as { incidents: unknown }[])[0]!.incidents, { count: 2, minutes: 12, ongoing: false });
+});
+
+test('Better Stack unavailable is one problem however many apps it covers, listed before the workers', () => {
+  const result = classify(bsFleet, new Map([['s1', 'down']]), 'unavailable', now);
+  assert.deepEqual(result.problems, ['unknown: Better Stack unavailable', 'app-1/worker: down. Check the worker']);
+  assert.equal(result.apps, 'unavailable');
 });

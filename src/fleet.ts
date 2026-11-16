@@ -3,12 +3,14 @@ import { parseDocument } from 'yaml';
 import { ConfigError } from './config-error.ts';
 
 // The fleet registry (docs/designs/pulseops-daily-note.md, "App registry"). This
-// slice reads only what the healthchecks.io note needs; later sources add their
-// own fields, so unknown keys are allowed.
+// slice reads what the healthchecks.io and Better Stack parts of the note need;
+// later sources add their own fields, so unknown keys are allowed.
 
 export type FleetCheck = { name: string; slug: string };
-export type FleetApp = { name: string; checks: FleetCheck[] };
-export type Fleet = { timezone: string; apps: FleetApp[] };
+/** `monitor` is the app's Better Stack monitor ID; it is undefined only when that source is disabled. */
+export type FleetApp = { name: string; monitor: string | undefined; checks: FleetCheck[] };
+export type SourceState = 'enabled' | 'disabled';
+export type Fleet = { timezone: string; sources: { betterstack: SourceState }; apps: FleetApp[] };
 
 export class FleetError extends ConfigError {
   constructor(message: string) {
@@ -18,6 +20,8 @@ export class FleetError extends ConfigError {
 }
 
 const APP_NAME = /^[a-z0-9-]{1,32}$/;
+/** Digits only, so a monitor ID can go into a request path without escaping. */
+const MONITOR_ID = /^\d{1,20}$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -54,7 +58,19 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
     problem('timezone', 'is missing or not an IANA time zone', 'set it to a zone such as Asia/Saigon');
   }
 
+  // A source is on unless the file turns it off: a missing value never drops a health source.
+  let betterstack: SourceState = 'enabled';
+  if (root.sources !== undefined && root.sources !== null) {
+    const value = isRecord(root.sources) ? root.sources.betterstack : root.sources;
+    if (!isRecord(root.sources) || (value !== undefined && value !== 'enabled' && value !== 'disabled')) {
+      problem('sources.betterstack', 'must be enabled or disabled', 'write sources: { betterstack: disabled } only if the free tier cannot read it');
+    } else if (value === 'disabled') {
+      betterstack = 'disabled';
+    }
+  }
+
   const apps: FleetApp[] = [];
+  const monitors = new Map<string, string>();
   const slugs = new Map<string, string>();
   const names = new Map<string, string>();
   if (!Array.isArray(root.apps) || root.apps.length === 0) {
@@ -73,6 +89,17 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
         problem(`${at}.name`, `repeats app ${name} from ${names.get(name)}`, 'give each app its own name');
       } else {
         names.set(name, at);
+      }
+      let monitor: string | undefined;
+      if (entry.monitor === undefined || entry.monitor === null) {
+        if (betterstack === 'enabled') problem(`${at}.monitor`, 'is missing', "copy the app's monitor ID from Better Stack, in quotes");
+      } else if (typeof entry.monitor !== 'string' || !MONITOR_ID.test(entry.monitor)) {
+        problem(`${at}.monitor`, 'must be the numeric monitor ID', 'copy the digits from the monitor URL in Better Stack, in quotes');
+      } else if (monitors.has(entry.monitor)) {
+        problem(`${at}.monitor`, `repeats monitor ${entry.monitor} from ${monitors.get(entry.monitor)}`, 'give each app its own monitor');
+      } else {
+        monitors.set(entry.monitor, at);
+        monitor = entry.monitor;
       }
       const checks: FleetCheck[] = [];
       if (entry.checks !== undefined && entry.checks !== null && !Array.isArray(entry.checks)) {
@@ -95,14 +122,14 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
           if (nonEmptyString(check.name) && nonEmptyString(check.slug)) checks.push({ name: check.name, slug: check.slug });
         });
       }
-      if (typeof name === 'string') apps.push({ name, checks });
+      if (typeof name === 'string') apps.push({ name, monitor, checks });
     });
   }
 
   if (problems.length > 0) {
     throw new FleetError(`pulseops E_CONFIG_INVALID: ${source} has ${problems.length} problem(s): ${problems.join(' | ')}`);
   }
-  return { timezone: timezone as string, apps };
+  return { timezone: timezone as string, sources: { betterstack }, apps };
 }
 
 export function loadFleet(path: string): Fleet {
