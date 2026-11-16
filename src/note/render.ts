@@ -1,15 +1,34 @@
-import type { Classified } from './classify.ts';
+import type { AppHealth, Classified } from './classify.ts';
 
 // The note layout from docs/designs/pulseops-daily-note.md ("Daily note"),
-// limited to what this slice reads. Better Stack is not checked, so the
-// headline never says "all clear": that needs both health sources enabled.
+// limited to what this slice reads. "all clear" needs no problems and both
+// health sources read; with Better Stack disabled the headline stays
+// "no problems found" and the footer names it.
 
-const NOT_CHECKED = 'Not checked: Better Stack, GitHub deploys, subscriptions';
+/** Sources the note does not read yet. */
+const NOT_BUILT = ['GitHub deploys', 'subscriptions'];
 
 function day(now: Date, timezone: string): string {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, weekday: 'short', day: 'numeric', month: 'short' }).formatToParts(now);
   const part = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
   return `${part('weekday')} ${part('day')} ${part('month')}`;
+}
+
+function duration(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const rest = minutes % 60;
+  return `${Math.floor(minutes / 60)} h${rest === 0 ? '' : ` ${rest} min`}`;
+}
+
+function incidentsText({ count, minutes, ongoing }: AppHealth['incidents']): string {
+  if (count === 0) return '0 incidents';
+  return `${count} incident${count === 1 ? '' : 's'} (${ongoing ? 'ongoing' : duration(minutes)})`;
+}
+
+function appLine(app: AppHealth): string {
+  if (app.status === 'up' || app.status === 'down') return `  ${app.name}  ${app.status}, ${incidentsText(app.incidents)}`;
+  const reason = app.status === 'too-many' ? 'more than 50 incidents' : app.status;
+  return `  ${app.name}  unknown (${reason})`;
 }
 
 function workersLine(workers: Classified['workers']): string {
@@ -21,11 +40,16 @@ function workersLine(workers: Classified['workers']): string {
 
 export function renderNote(classified: Classified, now: Date, timezone: string): string {
   const count = classified.problems.length;
-  const headline = count === 0 ? 'no problems found' : `${count} problem${count === 1 ? '' : 's'}`;
+  const bothRead = classified.apps !== 'disabled';
+  const headline = count > 0 ? `${count} problem${count === 1 ? '' : 's'}` : bothRead ? 'all clear' : 'no problems found';
   const lines = [`PulseOps, ${day(now, timezone)}: ${headline}`];
   for (const problem of classified.problems) lines.push(`  ${problem}`);
-  lines.push('', 'Health (24h)', `  workers  ${workersLine(classified.workers)}`);
+  lines.push('', 'Health (24h)');
+  if (classified.apps === 'unavailable') lines.push('  apps  unknown: Better Stack unavailable');
+  else if (classified.apps !== 'disabled') for (const app of classified.apps) lines.push(appLine(app));
+  lines.push(`  workers  ${workersLine(classified.workers)}`);
   for (const { check, reason } of classified.unknown) lines.push(`  ${check}  unknown (${reason})`);
-  lines.push('', 'LLM spend yesterday: not collected yet', '', NOT_CHECKED, '');
+  const notChecked = [...(classified.apps === 'disabled' ? ['Better Stack'] : []), ...NOT_BUILT];
+  lines.push('', 'LLM spend yesterday: not collected yet', '', `Not checked: ${notChecked.join(', ')}`, '');
   return lines.join('\n');
 }

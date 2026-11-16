@@ -1,24 +1,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parseFleet, loadFleet, FleetError } from '../src/fleet.ts';
+import { fakeKey, leakForms } from './helpers/leaky-server.ts';
 
 const valid = `
 timezone: Asia/Saigon
 apps:
   - name: app-1
+    monitor: "101"
     checks:
       - name: worker
         slug: app-1-worker
   - name: site
+    monitor: "102"
 `;
 
-test('a valid fleet file gives the timezone, apps and their checks', () => {
+test('a valid fleet file gives the timezone, apps with their Better Stack monitor, and their checks', () => {
   const fleet = parseFleet(valid);
   assert.equal(fleet.timezone, 'Asia/Saigon');
+  assert.deepEqual(fleet.sources, { betterstack: 'enabled' });
   assert.deepEqual(fleet.apps, [
-    { name: 'app-1', checks: [{ name: 'worker', slug: 'app-1-worker' }] },
-    { name: 'site', checks: [] },
+    { name: 'app-1', monitor: '101', checks: [{ name: 'worker', slug: 'app-1-worker' }] },
+    { name: 'site', monitor: '102', checks: [] },
   ]);
 });
 
@@ -57,7 +64,7 @@ test('YAML that does not parse is reported with its line and the parser code, ne
 
 test('the same slug used twice is refused, because each check must map to one fleet entry', () => {
   const dup = 'timezone: UTC\napps:\n  - name: a\n    checks:\n      - { name: w, slug: s }\n  - name: b\n    checks:\n      - { name: w, slug: s }\n';
-  assert.throws(() => parseFleet(dup), (error: unknown) => error instanceof FleetError && error.message.includes('slug s'));
+  assert.throws(() => parseFleet(dup), (error: unknown) => error instanceof FleetError && error.message.includes('apps[1].checks[0].slug repeats the slug of apps[0].checks[0]'));
 });
 
 test('fleet.example.yaml, the file new owners copy, is itself a valid fleet', () => {
@@ -80,6 +87,63 @@ test('an empty or null slug is reported as missing, not as "must be text"', () =
       () => parseFleet(`timezone: UTC\napps:\n  - name: a\n    checks:\n      - { name: w, slug: ${slug} }\n`),
       (error: unknown) => error instanceof FleetError && error.message.includes('slug is missing'),
       slug,
+    );
+  }
+});
+
+test('each app needs its Better Stack monitor ID: digits only, one app per monitor', () => {
+  const cases: [string, string][] = [
+    ['timezone: UTC\napps:\n  - name: a\n', 'apps[0].monitor is missing'],
+    ['timezone: UTC\napps:\n  - name: a\n    monitor: "12/../34"\n', 'apps[0].monitor must be the numeric monitor ID'],
+    ['timezone: UTC\napps:\n  - name: a\n    monitor: 123\n', 'apps[0].monitor must be the numeric monitor ID'],
+    ['timezone: UTC\napps:\n  - name: a\n    monitor: "7"\n  - name: b\n    monitor: "7"\n', 'apps[1].monitor repeats the monitor of apps[0]'],
+  ];
+  for (const [text, expected] of cases) {
+    assert.throws(
+      () => parseFleet(text),
+      (error: unknown) => error instanceof FleetError && error.message.includes(expected) && error.message.includes('fix:'),
+      expected,
+    );
+  }
+});
+
+test('sources.betterstack: disabled makes the monitor ID optional; any other value is refused', () => {
+  const off = parseFleet('timezone: UTC\nsources:\n  betterstack: disabled\napps:\n  - name: a\n');
+  assert.deepEqual(off.sources, { betterstack: 'disabled' });
+  assert.deepEqual(off.apps, [{ name: 'a', monitor: undefined, checks: [] }]);
+  assert.equal(parseFleet('timezone: UTC\nsources:\n  betterstack: enabled\napps:\n  - name: a\n    monitor: "1"\n').sources.betterstack, 'enabled');
+  for (const bad of ['sources: nope', 'sources:\n  betterstack: off', 'sources:\n  betterstack: false']) {
+    assert.throws(
+      () => parseFleet(`timezone: UTC\n${bad}\napps:\n  - name: a\n    monitor: "1"\n`),
+      (error: unknown) => error instanceof FleetError && error.message.includes('sources') && error.message.includes('enabled or disabled'),
+      bad,
+    );
+  }
+});
+
+test('a fleet error never repeats a value from the file or its path, so a key pasted into fleet.yaml cannot reach the log', () => {
+  // The error is logged before any key is read (the registry decides which keys are needed), so the message itself must hold no file text.
+  const key = fakeKey('hcr').replace(/_/g, '-').slice(0, 32);
+  const digits = String(Date.now()).padEnd(18, '7');
+  const cases = [
+    `timezone: UTC\napps:\n  - name: a\n    monitor: "1"\n    checks:\n      - { name: w, slug: ${key} }\n  - name: b\n    monitor: "2"\n    checks:\n      - { name: w, slug: ${key} }\n`,
+    `timezone: UTC\napps:\n  - name: ${key}\n    monitor: "1"\n  - name: ${key}\n    monitor: "2"\n`,
+    `timezone: UTC\napps:\n  - name: a\n    monitor: "${digits}"\n  - name: b\n    monitor: "${digits}"\n`,
+  ];
+  for (const text of cases) {
+    assert.throws(
+      () => parseFleet(text),
+      (error: unknown) => error instanceof FleetError && leakForms(key).concat(leakForms(digits)).every((form) => !error.message.includes(form)),
+    );
+  }
+  const dir = mkdtempSync(join(tmpdir(), `pulseops-${key}-`));
+  for (const path of [join(dir, 'missing.yaml'), join(dir, 'bad.yaml'), join(dir, 'list.yaml')]) {
+    if (path.endsWith('bad.yaml')) writeFileSync(path, 'timezone: UTC\napps:\n  - name: [unclosed\n');
+    if (path.endsWith('list.yaml')) writeFileSync(path, '- just a list\n');
+    assert.throws(
+      () => loadFleet(path),
+      (error: unknown) => error instanceof FleetError && !error.message.includes(key) && !error.message.includes(dir),
+      path,
     );
   }
 });

@@ -1,9 +1,14 @@
 # Copy to fleet.yaml (git-ignored) and fill in your apps.
+# monitor is the app's Better Stack monitor ID (the digits in its URL), in quotes.
 # Each check maps to a healthchecks.io check by its slug.
+# Add `sources: { betterstack: disabled }` only if Better Stack cannot be read;
+# the note then says "Not checked: Better Stack" and never "all clear".
 timezone: Asia/Saigon
 apps:
   - name: app-1
+    monitor: "100001"
     checks:
       - name: worker
         slug: app-1-worker
   - name: site
+    monitor: "100002"

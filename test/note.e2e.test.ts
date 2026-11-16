@@ -13,6 +13,7 @@ const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 const fleetYaml = `timezone: UTC
 apps:
   - name: app-1
+    monitor: "101"
     checks:
       - name: worker
         slug: app-1-worker
@@ -20,15 +21,24 @@ apps:
         slug: app-1-cron
 `;
 
-function writeFleet(): string {
+function writeFleet(text = fleetYaml): string {
   const dir = mkdtempSync(join(tmpdir(), 'pulseops-fleet-'));
   const path = join(dir, 'fleet.yaml');
-  writeFileSync(path, fleetYaml);
+  writeFileSync(path, text);
   return path;
 }
 
-async function fakeHealthchecks(status: number, body: unknown) {
-  const server = createServer((_req, res) => {
+/** healthchecks.io answers `status`/`body`; Better Stack answers `monitor` for the monitor, or `bsStatus` for every Better Stack call. */
+async function fakeHealthchecks(status: number, body: unknown, bs: { monitor?: string; bsStatus?: number } = {}) {
+  const server = createServer((req, res) => {
+    const url = req.url ?? '';
+    if (url.startsWith('/api/v2/monitors/') || url.startsWith('/api/v3/incidents')) {
+      res.writeHead(bs.bsStatus ?? 200, { 'content-type': 'application/json' });
+      if (bs.bsStatus !== undefined) return void res.end(JSON.stringify({ errors: 'Unauthorized' }));
+      return void res.end(
+        JSON.stringify(url.startsWith('/api/v2/') ? { data: { id: '101', attributes: { status: bs.monitor ?? 'up' } } } : { data: [], pagination: { next: null } }),
+      );
+    }
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(JSON.stringify(body));
   });
@@ -57,12 +67,13 @@ test('note --dry-run prints a real note from healthchecks.io and exits 0', async
   const key = fakeKey('hcr');
   const server = await fakeHealthchecks(200, { checks: [{ slug: 'app-1-worker', status: 'up' }, { slug: 'app-1-cron', status: 'new' }] });
   try {
-    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: key, HEALTHCHECKS_API_URL: server.url });
+    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: key, HEALTHCHECKS_API_URL: server.url, BETTERSTACK_API_TOKEN: fakeKey('bst'), BETTERSTACK_API_URL: server.url });
     assert.equal(code, 0, stderr);
     assert.match(stdout, /^PulseOps, \w{3} \d{1,2} \w{3}: 1 problem\n/);
     assert.ok(stdout.includes('  app-1/cron: unknown (new). Ping it once, or fix its slug in fleet.yaml\n'));
+    assert.ok(stdout.includes('  app-1  up, 0 incidents\n'));
     assert.ok(stdout.includes('  workers  1 of 2 reporting now\n'));
-    assert.ok(stdout.includes('Not checked: Better Stack, GitHub deploys, subscriptions\n'));
+    assert.ok(stdout.includes('Not checked: GitHub deploys, subscriptions\n'));
     for (const form of leakForms(key)) assert.ok(!(stdout + stderr).includes(form), 'a leak form reached the output');
   } finally {
     await server.close();
@@ -73,7 +84,7 @@ test('when healthchecks.io rejects the key, the note still prints with the sourc
   const key = fakeKey('hcr');
   const server = await fakeHealthchecks(401, { error: 'bad key', got: key });
   try {
-    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: key, HEALTHCHECKS_API_URL: server.url });
+    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: key, HEALTHCHECKS_API_URL: server.url, BETTERSTACK_API_TOKEN: fakeKey('bst'), BETTERSTACK_API_URL: server.url });
     assert.equal(code, 0, stderr);
     assert.ok(stdout.includes(': 1 problem\n  unknown: healthchecks.io unavailable\n'));
     assert.ok(stderr.includes('E_VENDOR_HTTP'));
@@ -111,6 +122,7 @@ test('an http base URL to another host exits 2 with E_CONFIG_INVALID, before any
   // The unit tests for healthchecksBaseUrl cover each refused shape; this checks the CLI stops with exit 2.
   const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
     HEALTHCHECKS_API_KEY: fakeKey('hcr'),
+    BETTERSTACK_API_TOKEN: fakeKey('bst'),
     HEALTHCHECKS_API_URL: 'http://pulseops-test.invalid:9',
   });
   assert.equal(code, 2);
@@ -125,4 +137,96 @@ test('an argument error writes none of the arguments, so a key passed as a flag 
   assert.ok(stderr.includes('E_USAGE') && stderr.includes('invalid arguments'));
   assert.ok(!stderr.includes('REDACTED'), 'argv text reached the log and needed redacting');
   for (const form of leakForms(key)) assert.ok(!stderr.includes(form), 'a leak form reached stderr');
+});
+
+test('with both sources read and nothing wrong, the dry run says "all clear"', async () => {
+  const server = await fakeHealthchecks(200, { checks: [{ slug: 'app-1-worker', status: 'up' }, { slug: 'app-1-cron', status: 'grace' }] });
+  try {
+    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
+      HEALTHCHECKS_API_KEY: fakeKey('hcr'),
+      HEALTHCHECKS_API_URL: server.url,
+      BETTERSTACK_API_TOKEN: fakeKey('bst'),
+      BETTERSTACK_API_URL: server.url,
+    });
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /^PulseOps, \w{3} \d{1,2} \w{3}: all clear\n/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('when Better Stack rejects the token, the note still prints with that source unknown, and the token is never logged', async () => {
+  const token = fakeKey('bst');
+  const server = await fakeHealthchecks(200, { checks: [{ slug: 'app-1-worker', status: 'up' }, { slug: 'app-1-cron', status: 'up' }] }, { bsStatus: 401 });
+  try {
+    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
+      HEALTHCHECKS_API_KEY: fakeKey('hcr'),
+      HEALTHCHECKS_API_URL: server.url,
+      BETTERSTACK_API_TOKEN: token,
+      BETTERSTACK_API_URL: server.url,
+    });
+    assert.equal(code, 0, stderr);
+    assert.ok(stdout.includes(': 1 problem\n  unknown: Better Stack unavailable\n'));
+    assert.ok(stdout.includes('  apps  unknown: Better Stack unavailable\n'));
+    assert.ok(stderr.includes('"error_status":401'));
+    for (const form of leakForms(token)) assert.ok(!(stdout + stderr).includes(form), 'a form of the token reached the output');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a missing Better Stack token exits 2 and names it; with the source disabled no token is read and the footer says Not checked', async () => {
+  const missing = await run(['note', '--dry-run', '--fleet', writeFleet()], { HEALTHCHECKS_API_KEY: fakeKey('hcr') });
+  assert.equal(missing.code, 2);
+  assert.ok(missing.stderr.includes('E_CONFIG_MISSING') && missing.stderr.includes('BETTERSTACK_API_TOKEN'));
+  const server = await fakeHealthchecks(200, { checks: [{ slug: 'app-1-worker', status: 'up' }] });
+  try {
+    const disabled = writeFleet('timezone: UTC\nsources:\n  betterstack: disabled\napps:\n  - name: app-1\n    checks:\n      - name: worker\n        slug: app-1-worker\n');
+    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', disabled], { HEALTHCHECKS_API_KEY: fakeKey('hcr'), HEALTHCHECKS_API_URL: server.url });
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /: no problems found\n/);
+    assert.ok(stdout.includes('Not checked: Better Stack, GitHub deploys, subscriptions\n'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('a monitor that is down is one problem in the note', async () => {
+  const server = await fakeHealthchecks(200, { checks: [{ slug: 'app-1-worker', status: 'up' }, { slug: 'app-1-cron', status: 'up' }] }, { monitor: 'down' });
+  try {
+    const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
+      HEALTHCHECKS_API_KEY: fakeKey('hcr'),
+      HEALTHCHECKS_API_URL: server.url,
+      BETTERSTACK_API_TOKEN: fakeKey('bst'),
+      BETTERSTACK_API_URL: server.url,
+    });
+    assert.equal(code, 0, stderr);
+    assert.ok(stdout.includes(': 1 problem\n  app-1: down. Check the app\n'));
+    assert.ok(stdout.includes('  app-1  down, 0 incidents\n'));
+  } finally {
+    await server.close();
+  }
+});
+
+test('an http BETTERSTACK_API_URL to another host exits 2 before any request, so the token never leaves', async () => {
+  const token = fakeKey('bst');
+  const { code, stdout, stderr } = await run(['note', '--dry-run', '--fleet', writeFleet()], {
+    HEALTHCHECKS_API_KEY: fakeKey('hcr'),
+    BETTERSTACK_API_TOKEN: token,
+    BETTERSTACK_API_URL: 'http://pulseops-test.invalid:9',
+  });
+  assert.equal(code, 2);
+  assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('BETTERSTACK_API_URL'));
+  assert.equal(stdout, '', 'no note is printed');
+  for (const form of leakForms(token)) assert.ok(!stderr.includes(form), 'a form of the token reached stderr');
+});
+
+test('a key pasted into fleet.yaml as a repeated slug is never printed by the fleet error (exit 2)', async () => {
+  // The registry is read before any key (it decides which keys are needed), so the redactor knows none yet.
+  const key = fakeKey('hcr');
+  const fleet = writeFleet(`timezone: UTC\napps:\n  - name: app-1\n    monitor: "101"\n    checks:\n      - { name: w, slug: ${key} }\n      - { name: x, slug: ${key} }\n`);
+  const { code, stderr } = await run(['note', '--dry-run', '--fleet', fleet], { HEALTHCHECKS_API_KEY: key, BETTERSTACK_API_TOKEN: fakeKey('bst') });
+  assert.equal(code, 2);
+  assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('repeats the slug of apps[0].checks[0]'), stderr);
+  for (const form of leakForms(key)) assert.ok(!stderr.includes(form), 'a form of the key reached stderr');
 });

@@ -1,15 +1,17 @@
-// `pulseops note [--dry-run] [--fleet <path>]`: reads healthchecks.io for the
-// checks in fleet.yaml, builds the note, and sends it to Telegram (or, with
-// --dry-run, prints it). After a delivery it pings the note job's check.
+// `pulseops note [--dry-run] [--fleet <path>]`: reads Better Stack and
+// healthchecks.io for the apps and checks in fleet.yaml, builds the note, and
+// sends it to Telegram (or, with --dry-run, prints it). After a delivery it
+// pings the note job's check.
 import { parseArgs } from 'node:util';
 import { setTimeout as wait } from 'node:timers/promises';
 import { ConfigError } from './config-error.ts';
-import { loadFleet } from './fleet.ts';
+import { loadFleet, type Fleet } from './fleet.ts';
 import { runMain, EXIT_USAGE, type SecretSource } from './run-main.ts';
 import { assertNoSecrets } from './secrets.ts';
 import { classify } from './note/classify.ts';
 import { renderNote } from './note/render.ts';
 import { readChecks, healthchecksBaseUrl, checksOrUnavailable } from './sources/healthchecks.ts';
+import { betterstackBaseUrl, monitorsOrUnavailable } from './sources/betterstack.ts';
 import { readTelegramToken, readPingUuid, telegramBotId, telegramChatId, sendNote, deliveryReport, pingReport, SEND_BUDGET_MS, TELEGRAM_DEFAULT_URL } from './telegram.ts';
 import { getOk, vendorBaseUrl, VendorHttpError } from './vendor-http.ts';
 
@@ -29,8 +31,23 @@ try {
 }
 const dryRun = args?.values['dry-run'] === true;
 const isNote = args !== undefined && args.positionals.length === 1 && args.positionals[0] === 'note';
-// Keys are read only for a command that uses them; a usage error needs none.
-const sources: SecretSource[] = !isNote ? [] : dryRun ? ['HEALTHCHECKS_API_KEY'] : ['HEALTHCHECKS_API_KEY', readTelegramToken, readPingUuid];
+
+// The registry decides which source keys are needed (a disabled source needs
+// none), so it is read before runMain too. Its error is reported inside runMain.
+let fleet: Fleet | undefined;
+let fleetError: unknown;
+if (isNote) {
+  try {
+    fleet = loadFleet(args!.values.fleet ?? 'fleet.yaml');
+  } catch (error) {
+    fleetError = error;
+  }
+}
+
+// Keys are read only for a command that uses them; a usage or registry error needs none.
+const readKeys: SecretSource[] =
+  fleet === undefined ? [] : ['HEALTHCHECKS_API_KEY', ...(fleet.sources.betterstack === 'enabled' ? ['BETTERSTACK_API_TOKEN'] : [])];
+const sources: SecretSource[] = !isNote || fleet === undefined ? [] : dryRun ? readKeys : [...readKeys, readTelegramToken, readPingUuid];
 
 await runMain(sources, async ({ secrets, log, redact }) => {
   const usage = (message: string) => {
@@ -40,13 +57,14 @@ await runMain(sources, async ({ secrets, log, redact }) => {
   if (args === undefined) return usage('invalid arguments');
   if (!isNote) return usage('unknown command');
 
-  let fleet;
   let baseUrl;
+  let betterstackBase: string | undefined;
   let telegram: { botId: string; chatId: string; baseUrl: string } | undefined;
   let pingBase: string | undefined;
   try {
-    fleet = loadFleet(args.values.fleet ?? 'fleet.yaml');
+    if (fleet === undefined) throw fleetError;
     baseUrl = healthchecksBaseUrl(process.env.HEALTHCHECKS_API_URL);
+    if (fleet.sources.betterstack === 'enabled') betterstackBase = betterstackBaseUrl(process.env.BETTERSTACK_API_URL);
     if (!dryRun) {
       telegram = {
         botId: telegramBotId(process.env),
@@ -63,8 +81,13 @@ await runMain(sources, async ({ secrets, log, redact }) => {
   }
 
   const secret = (name: string) => secrets.find((s) => s.name === name)!.value;
-  const checks = await checksOrUnavailable(() => readChecks(secret('HEALTHCHECKS_API_KEY'), redact, baseUrl), log);
-  const note = renderNote(classify(fleet, checks), new Date(), fleet.timezone);
+  const now = new Date();
+  // Both sources are read in parallel, so the reads take about one request timeout.
+  const [checks, monitors] = await Promise.all([
+    checksOrUnavailable(() => readChecks(secret('HEALTHCHECKS_API_KEY'), redact, baseUrl), log),
+    betterstackBase === undefined ? ('disabled' as const) : monitorsOrUnavailable(fleet, secret('BETTERSTACK_API_TOKEN'), redact, betterstackBase, now, log),
+  ]);
+  const note = renderNote(classify(fleet, checks, monitors, now), now, fleet.timezone);
 
   if (telegram === undefined || pingBase === undefined) {
     assertNoSecrets(note, secrets, 'note text');
