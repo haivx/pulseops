@@ -30,6 +30,7 @@
 8. From the `/ship` review: a wrong override that fails at the network or 5xx level (typo host, TLS error, proxy 502) ends `unavailable` / `partial` / `over-budget`, exit 4, "no setting is wrong", with no override hint; the ping's warn branch has the same gap. Add the hint when the override is set.
 9. From the `/ship` review: `UUID_SHAPE` in `src/telegram.ts` has the `/i` flag, so an uppercase `HEALTHCHECKS_PING_UUID` passes the startup check. If healthchecks.io only routes lowercase UUIDs (not checked against the live service), every ping 404s and the note check alerts daily. Check, then drop `/i` (never lowercase silently).
 10. From the `/ship` review: the ping after delivery is tried once (`src/cli.ts`). One network failure or 5xx gives a false "missed" alert on a day the note arrived. Consider one retry with its own small deadline inside the 120 s watchdog.
+11. From the `/ship` review (owner chose to ship first): `test/telegram.test.ts` ("the ping UUID must look like a UUID") commits a fixed UUID, the public RFC example, against the CLAUDE.md rule "Never commit a key-shaped string". Build it with `randomUUID()` and derive the bad cases from it, as `test/send.e2e.test.ts` does.
 
 **Why:** None sends a duplicate, hides a missing note or leaks a key; item 1 can outlast a `timeout 120` watchdog only after a clock jump, and items 5, 7, 8 and 9 only misfire on a mistyped setting.
 
