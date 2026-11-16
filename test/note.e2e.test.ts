@@ -220,3 +220,13 @@ test('an http BETTERSTACK_API_URL to another host exits 2 before any request, so
   assert.equal(stdout, '', 'no note is printed');
   for (const form of leakForms(token)) assert.ok(!stderr.includes(form), 'a form of the token reached stderr');
 });
+
+test('a key pasted into fleet.yaml as a repeated slug is never printed by the fleet error (exit 2)', async () => {
+  // The registry is read before any key (it decides which keys are needed), so the redactor knows none yet.
+  const key = fakeKey('hcr');
+  const fleet = writeFleet(`timezone: UTC\napps:\n  - name: app-1\n    monitor: "101"\n    checks:\n      - { name: w, slug: ${key} }\n      - { name: x, slug: ${key} }\n`);
+  const { code, stderr } = await run(['note', '--dry-run', '--fleet', fleet], { HEALTHCHECKS_API_KEY: key, BETTERSTACK_API_TOKEN: fakeKey('bst') });
+  assert.equal(code, 2);
+  assert.ok(stderr.includes('E_CONFIG_INVALID') && stderr.includes('repeats the slug of apps[0].checks[0]'), stderr);
+  for (const form of leakForms(key)) assert.ok(!stderr.includes(form), 'a form of the key reached stderr');
+});

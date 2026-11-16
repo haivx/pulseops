@@ -30,14 +30,21 @@ function appProblem(app: string, status: string): string | undefined {
   return `${app}: unknown (${status}). Check it in Better Stack`;
 }
 
+/**
+ * Every incident that overlaps the last 24 hours: still open, or resolved after
+ * the window began. Its minutes are clipped to the window, so an outage that
+ * began yesterday and ended this morning shows, never "0 incidents".
+ */
 function recentIncidents(reading: MonitorReading, now: Date): Incidents {
   const end = now.getTime();
+  const start = end - WINDOW_MS;
   const result: Incidents = { count: 0, minutes: 0, ongoing: false };
   for (const { startedAt, resolvedAt } of reading.incidents) {
-    if (startedAt < end - WINDOW_MS || startedAt > end) continue;
+    const until = Math.min(resolvedAt ?? end, end);
+    if (startedAt > end || until < start) continue;
     result.count += 1;
     if (resolvedAt === undefined) result.ongoing = true;
-    result.minutes += Math.round((Math.min(resolvedAt ?? end, end) - startedAt) / 60_000);
+    result.minutes += Math.round((until - Math.max(startedAt, start)) / 60_000);
   }
   return result;
 }

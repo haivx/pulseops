@@ -16,6 +16,23 @@
 
 ## Note
 
+### Better Stack source: follow-ups from the first review
+
+**What:** Found by the `feat/betterstack-source` review and deferred by the owner (only the unredacted fleet error and the 24-hour overlap were fixed):
+1. `all clear` can print beside an ongoing incident: the monitor reads `up` while its incident list still has one open (the two requests run in parallel). Count an ongoing incident as a problem for that app, still one per app.
+2. A partial 200 reads as complete: a page of exactly 50 incidents with no `pagination` object is not `too-many`, and an incident without a monitor relationship is silently dropped (`0 incidents`). Treat a missing `pagination` or relationship as `E_VENDOR_BAD_JSON`, and `data.length >= 50` as `too-many` (`src/sources/betterstack.ts`).
+3. Durations: `resolved_at` before `started_at` gives a negative total, and three 20-second blips show `0 min`. Sum milliseconds, clamp at 0, round once (`src/note/classify.ts`).
+4. Monitor IDs: `"007"` passes `fleet.yaml` but never matches the vendor's `7`, and an ID above 2^53 sent as a JSON number loses precision; both drop every incident. Reject leading zeros (`^[1-9]\d{0,19}$`) and accept only a string or a safe integer. An incident that starts a few minutes after now (clock skew) is dropped; count it.
+5. "Never follow `pagination.next`" is a convention: any URL can be passed to `getJson` with the token header, and only a test checks it. Make a Better Stack-only getter that takes a fixed path template and digit parameters and holds the token, so no other URL can get it.
+6. Two tests claim more than they check: the `BETTERSTACK_API_URL` e2e uses an `.invalid` host with no server, so a request would fail silently (use a loopback server and assert zero hits); the `monitorsOrUnavailable` test's fake answers any ID, so it never checks each app's monitor was requested.
+7. Swapped or wrong monitor IDs read `up` with no problem, and an app missing from `fleet.yaml` is simply absent. Showing the monitor's name would put vendor text in the note, so this needs a design decision (for example listing the team's monitors and flagging any not in `fleet.yaml`).
+
+**Why:** None leaks a key. Items 1, 2 and 7 can let a note read better than reality; the rest are rare inputs.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None
+
 ### Telegram send: follow-ups from the third review round
 
 **What:** Left from the `feat/telegram-send` review of the typed delivery result, deferred by the owner (only the duplicate-send, false-delivery and partial-refusal findings were fixed):

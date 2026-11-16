@@ -112,3 +112,21 @@ test('Better Stack unavailable shows one apps line and never "all clear"; disabl
   assert.ok(disabled.startsWith('PulseOps, Thu 12 Nov: no problems found\n'));
   assert.ok(disabled.includes('Not checked: Better Stack, GitHub deploys, subscriptions\n'));
 });
+
+test('incident time of an hour or more is shown in hours and minutes', () => {
+  const note = renderNote(
+    {
+      problems: [],
+      workers: { reporting: 0, total: 0, failed: [] },
+      unknown: [],
+      apps: [
+        { name: 'a', status: 'up', incidents: { count: 1, minutes: 23 * 60, ongoing: false } },
+        { name: 'b', status: 'up', incidents: { count: 2, minutes: 95, ongoing: false } },
+      ],
+    },
+    now,
+    'UTC',
+  );
+  assert.ok(note.includes('  a  up, 1 incident (23 h)\n'));
+  assert.ok(note.includes('  b  up, 2 incidents (1 h 35 min)\n'));
+});

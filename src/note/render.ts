@@ -14,9 +14,15 @@ function day(now: Date, timezone: string): string {
   return `${part('weekday')} ${part('day')} ${part('month')}`;
 }
 
+function duration(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const rest = minutes % 60;
+  return `${Math.floor(minutes / 60)} h${rest === 0 ? '' : ` ${rest} min`}`;
+}
+
 function incidentsText({ count, minutes, ongoing }: AppHealth['incidents']): string {
   if (count === 0) return '0 incidents';
-  return `${count} incident${count === 1 ? '' : 's'} (${ongoing ? 'ongoing' : `${minutes} min`})`;
+  return `${count} incident${count === 1 ? '' : 's'} (${ongoing ? 'ongoing' : duration(minutes)})`;
 }
 
 function appLine(app: AppHealth): string {

@@ -37,20 +37,25 @@ function validTimezone(value: string): boolean {
   }
 }
 
-/** Parses and validates fleet.yaml text, reporting every problem at once. */
-export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
+/**
+ * Parses and validates fleet.yaml text, reporting every problem at once. A
+ * message names an entry only by its position (apps[1].checks[0]) and never
+ * repeats a value or the file's path: the registry is read before any key, so
+ * the redactor knows none yet, and a key pasted into the file must not reach the log.
+ */
+export function parseFleet(text: string): Fleet {
   const doc = parseDocument(text);
   if (doc.errors.length > 0) {
     // The parser's own message can quote the file, so only its line and code are kept.
     const where = doc.errors.map((error) => `line ${error.linePos?.[0].line ?? '?'} (${error.code})`);
-    throw new FleetError(`pulseops E_CONFIG_INVALID: ${source} is not valid YAML (${where.join('; ')}); fix: correct the YAML at that line`);
+    throw new FleetError(`pulseops E_CONFIG_INVALID: the fleet file is not valid YAML (${where.join('; ')}); fix: correct the YAML at that line`);
   }
   const root: unknown = doc.toJS();
   const problems: string[] = [];
   const problem = (where: string, what: string, fix: string) => problems.push(`${where} ${what}; fix: ${fix}`);
 
   if (!isRecord(root)) {
-    throw new FleetError(`pulseops E_CONFIG_INVALID: ${source} must be a mapping with timezone and apps; fix: start from fleet.example.yaml`);
+    throw new FleetError('pulseops E_CONFIG_INVALID: the fleet file must be a mapping with timezone and apps; fix: start from fleet.example.yaml');
   }
 
   const timezone = root.timezone;
@@ -86,7 +91,7 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
       if (typeof name !== 'string' || !APP_NAME.test(name)) {
         problem(`${at}.name`, 'must match ^[a-z0-9-]{1,32}$', 'use lowercase letters, digits and hyphens');
       } else if (names.has(name)) {
-        problem(`${at}.name`, `repeats app ${name} from ${names.get(name)}`, 'give each app its own name');
+        problem(`${at}.name`, `repeats the name of ${names.get(name)}`, 'give each app its own name');
       } else {
         names.set(name, at);
       }
@@ -96,7 +101,7 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
       } else if (typeof entry.monitor !== 'string' || !MONITOR_ID.test(entry.monitor)) {
         problem(`${at}.monitor`, 'must be the numeric monitor ID', 'copy the digits from the monitor URL in Better Stack, in quotes');
       } else if (monitors.has(entry.monitor)) {
-        problem(`${at}.monitor`, `repeats monitor ${entry.monitor} from ${monitors.get(entry.monitor)}`, 'give each app its own monitor');
+        problem(`${at}.monitor`, `repeats the monitor of ${monitors.get(entry.monitor)}`, 'give each app its own monitor');
       } else {
         monitors.set(entry.monitor, at);
         monitor = entry.monitor;
@@ -115,7 +120,7 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
           if (!nonEmptyString(check.slug)) {
             problem(`${cat}.slug`, typeof check.slug === 'string' || check.slug === undefined || check.slug === null ? 'is missing' : 'must be text', "copy the check's slug from healthchecks.io");
           } else if (slugs.has(check.slug)) {
-            problem(`${cat}.slug`, `repeats slug ${check.slug} from ${slugs.get(check.slug)}`, 'give each check its own slug');
+            problem(`${cat}.slug`, `repeats the slug of ${slugs.get(check.slug)}`, 'give each check its own slug');
           } else {
             slugs.set(check.slug, cat);
           }
@@ -127,7 +132,7 @@ export function parseFleet(text: string, source = 'fleet.yaml'): Fleet {
   }
 
   if (problems.length > 0) {
-    throw new FleetError(`pulseops E_CONFIG_INVALID: ${source} has ${problems.length} problem(s): ${problems.join(' | ')}`);
+    throw new FleetError(`pulseops E_CONFIG_INVALID: the fleet file has ${problems.length} problem(s): ${problems.join(' | ')}`);
   }
   return { timezone: timezone as string, sources: { betterstack }, apps };
 }
@@ -137,8 +142,9 @@ export function loadFleet(path: string): Fleet {
   try {
     text = readFileSync(path, 'utf8');
   } catch (error) {
-    const reason = (error as NodeJS.ErrnoException).code ?? 'unreadable';
-    throw new FleetError(`pulseops E_CONFIG_INVALID: cannot read ${path} (${reason}); fix: create it from fleet.example.yaml or pass --fleet <path>`);
+    const code = (error as NodeJS.ErrnoException).code;
+    const reason = typeof code === 'string' && /^E[A-Z]{2,15}$/.test(code) ? code : 'unreadable';
+    throw new FleetError(`pulseops E_CONFIG_INVALID: cannot read the fleet file (${reason}); fix: create fleet.yaml from fleet.example.yaml, or check the --fleet path`);
   }
-  return parseFleet(text, path);
+  return parseFleet(text);
 }

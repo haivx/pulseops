@@ -113,17 +113,29 @@ test('Better Stack: every status outside up and down, a missing monitor and too 
   assert.deepEqual(classify(bsFleet, new Map([['s1', 'up']]), monitors({ site: up }), now).problems, ['app-1: unknown (missing). Check its monitor ID in fleet.yaml']);
 });
 
-test('Better Stack: only incidents that started in the last 24 hours count; resolved ones are not problems', () => {
+test('Better Stack: every incident that overlaps the last 24 hours counts, its minutes clipped to the window; resolved ones are not problems', () => {
   const incidents = [
+    // Inside the window: 4 min.
     { startedAt: minutesAgo(24 * 60 - 1), resolvedAt: minutesAgo(24 * 60 - 5) },
+    // Started before the window, resolved inside it: only the 10 min inside count.
     { startedAt: minutesAgo(24 * 60 + 1), resolvedAt: minutesAgo(24 * 60 - 10) },
-    // Before midnight UTC and still inside the window.
+    // Before midnight UTC and still inside the window: 8 min.
     { startedAt: Date.parse('2026-11-11T23:50:00Z'), resolvedAt: Date.parse('2026-11-11T23:58:00Z') },
+    // Resolved before the window: not counted.
+    { startedAt: minutesAgo(30 * 60), resolvedAt: minutesAgo(25 * 60) },
+    // Starts after now (not counted here; clock skew is a deferred follow-up).
     { startedAt: now.getTime() + 60_000, resolvedAt: undefined },
   ];
   const result = classify(bsFleet, new Map([['s1', 'up']]), monitors({ 'app-1': { status: 'up', incidents }, site: up }), now);
   assert.deepEqual(result.problems, []);
-  assert.deepEqual((result.apps as { incidents: unknown }[])[0]!.incidents, { count: 2, minutes: 12, ongoing: false });
+  assert.deepEqual((result.apps as { incidents: unknown }[])[0]!.incidents, { count: 3, minutes: 22, ongoing: false });
+});
+
+test('Better Stack: a 23-hour outage that began 25 hours ago and ended an hour ago is in the note, never "0 incidents"', () => {
+  const result = classify(bsFleet, new Map([['s1', 'up']]), monitors({ 'app-1': { status: 'up', incidents: [{ startedAt: minutesAgo(25 * 60), resolvedAt: minutesAgo(60) }] }, site: up }), now);
+  assert.deepEqual((result.apps as { incidents: unknown }[])[0]!.incidents, { count: 1, minutes: 23 * 60, ongoing: false });
+  const open = classify(bsFleet, new Map([['s1', 'up']]), monitors({ 'app-1': { status: 'down', incidents: [{ startedAt: minutesAgo(30 * 60), resolvedAt: undefined }] }, site: up }), now);
+  assert.deepEqual((open.apps as { incidents: unknown }[])[0]!.incidents, { count: 1, minutes: 24 * 60, ongoing: true });
 });
 
 test('Better Stack unavailable is one problem however many apps it covers, listed before the workers', () => {
