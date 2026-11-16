@@ -20,6 +20,6 @@ Status: design approved. Built so far: the API-key guard (see [the secrets rule]
 Exit codes:
 - `0`: the note was sent. If the healthchecks.io ping fails afterwards, the run still exits 0: a refused ping (a wrong `HEALTHCHECKS_PING_UUID`) is logged as an error with a fix, an outage as a warning, and the missed ping raises its own alert.
 - `2`: a setting to fix. Either something is missing or malformed, or Telegram refused the token (401/404), the chat (403) or the message (other 4xx). The log line names the setting.
-- `4`: try again later; no setting is wrong. Telegram was unreachable or failing after 3 tries (5xx, 408, 429), failed after some parts had gone out ("k of n parts"), or the send ran out of its 90-second budget.
+- `4`: try again later; no setting is wrong. Telegram was unreachable or failing after 3 tries (5xx, 408, 429), failed after some parts had gone out ("k of n parts"), took a part without confirming it (the note may have arrived: check the chat), or the send ran out of its 90-second budget.
 
 A whole run takes at most about 110 seconds (90 s to send, plus one request each for the healthchecks.io read and the ping), so a `timeout 120` watchdog will not cut it short.
